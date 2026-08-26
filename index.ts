@@ -269,7 +269,7 @@ function extractDomainsFromCommand(command: string): string[] {
   }
 
   // Bare hostnames after curl|wget|ping|dig|host
-  const curlWgetRegex = /(?:curl|wget|ping|dig|host)\s+([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+  const curlWgetRegex = /\b(?:curl|wget|ping|dig|host)\s+([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
   while ((match = curlWgetRegex.exec(command)) !== null) {
     domains.add(match[1].toLowerCase());
   }
@@ -873,8 +873,8 @@ export default function (pi: ExtensionAPI) {
       hint += `To allow this path, manually remove the matching pattern from denyWrite in:\n  ${tildify(projectPath)}\n  ${tildify(globalPath)}\n`;
       // Special hint for .git/config and .git/hooks - mandatory denies unless allowGitConfig is true
       if (
-        blockedPath.includes(".git/config") ||
-        (blockedPath.includes(".git/hooks/") && initialConfig.filesystem?.allowGitConfig !== true)
+        (blockedPath.includes(".git/config") || blockedPath.includes(".git/hooks/")) &&
+        initialConfig.filesystem?.allowGitConfig !== true
       ) {
         hint += `This is a mandatory deny unless filesystem.allowGitConfig: true is set in sandbox.json.\n`;
       }
