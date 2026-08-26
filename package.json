@@ -1,7 +1,7 @@
 {
   "name": "pi-claude-sandbox",
-  "version": "0.6.0",
-  "description": "Claude-style OS-level sandboxing for pi with interactive permission prompts. Coexists with pi-tool-display and other bash-overriding extensions. Forked from carderne/pi-sandbox.",
+  "version": "0.7.0",
+  "description": "Claude-style OS-level sandboxing for pi with interactive permission prompts. Coexists with pi-tool-display and other bash-overriding extensions. Forked from carderne/pi-sandbox, then forked by javapacr for profile-aware config handling and documentation fixes.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -14,23 +14,21 @@
       "./index.ts"
     ]
   },
-  "publishConfig": {
-    "access": "public"
-  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tuansondinh/pi-claude-sandbox.git"
+    "url": "https://github.com/javapacr/pi-claude-sandbox.git"
   },
   "author": "Son Dinh",
   "contributors": [
     "Chris Arderne <chris@rdrn.me> (original pi-sandbox)",
-    "Mario Zechner (original pi-mono sandbox example)"
+    "Mario Zechner (original pi-mono sandbox example)",
+    "javapacr (profile-aware config fixes)"
   ],
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/tuansondinh/pi-claude-sandbox/issues"
+    "url": "https://github.com/javapacr/pi-claude-sandbox/issues"
   },
-  "homepage": "https://github.com/tuansondinh/pi-claude-sandbox",
+  "homepage": "https://github.com/javapacr/pi-claude-sandbox",
   "scripts": {
     "fmt": "oxfmt index.ts",
     "lint": "oxlint index.ts",
@@ -43,15 +41,10 @@
     "@carderne/sandbox-runtime": "^0.0.43"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.61.0"
-  },
-  "peerDependenciesMeta": {
-    "@mariozechner/pi-coding-agent": {
-      "optional": true
-    }
+    "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.61.0",
+    "@earendil-works/pi-coding-agent": "*",
     "@types/node": "^24",
     "oxfmt": "^0.33.0",
     "oxlint": "^1.48.0",

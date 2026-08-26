@@ -64,9 +64,11 @@ anywhere else → fail → prompt → grant or abort
 These two extensions are a pair. Install both:
 
 ```bash
-pi install npm:pi-claude-sandbox          # kernel layer (bash subprocesses)
-pi install npm:pi-claude-permissions      # rules layer (Read/Write/Edit/Bash tool calls)
+pi install npm:@zackify/pi-claude-permissions  # rules layer (Read/Write/Edit/Bash tool calls)
+pi install git:github.com/javapacr/pi-claude-sandbox  # kernel layer (bash subprocesses)
 ```
+
+Then add `"git:github.com/javapacr/pi-claude-sandbox"` to your profile's settings.json packages array.
 
 **pi-claude-permissions** decides *"is the agent allowed to call this tool with these args?"*
 Pattern-based allow/ask/deny for Read, Write, Edit, Bash, MCP.
@@ -111,7 +113,9 @@ macOS works out of the box via built-in `sandbox-exec`.
 
 ## Config
 
-`~/.pi/agent/sandbox.json` (global) or `.pi/sandbox.json` (project-local, takes precedence).
+`<agent-dir>/sandbox.json` (global) or `.pi/sandbox.json` (project-local, takes precedence).
+
+The global config path is `~/.pi/agent/sandbox.json` by default, or the profile-specific directory set by `PI_CODING_AGENT_DIR` (e.g. `~/.pi/personal/sandbox.json` or `~/.pi/work/sandbox.json`).
 
 Defaults are sensible; you usually don't need to change them. Full example:
 
@@ -224,9 +228,7 @@ The **bright line** is the value. Once approval is allowed, the guarantee "agent
 
 ### What's blocked
 
-
 **Always-blocked files** (in CWD and recursively via `**/`):
-
 
 | Path | Attack vector |
 |--|--|
@@ -243,14 +245,15 @@ The **bright line** is the value. Once approval is allowed, the guarantee "agent
 | `.claude/commands/`, `.claude/agents/` | Slash command / subagent injection |
 | `.git/hooks/` | `pre-commit`, `post-checkout`, etc. → exec on next git op |
 
-**Conditionally blocked** (one opt-out flag exists upstream — not yet exposed by this extension):
+**Conditionally blocked** (one opt-out flag exists upstream — exposed by this extension):
 
 | Path | Setting |
 |--|--|
-| `.git/config` | `allowGitConfig: true` (per-repo equivalent of `.gitconfig`) |
+| `.git/config` | `filesystem.allowGitConfig: true` in sandbox.json |
 
 **Side effects on common workflows:**
 
+- `git push -u` / `git pull` / remote URL updates may fail with "Operation not permitted" if writing `.git/config` or `.git/hooks/**`. Set `filesystem.allowGitConfig: true` in sandbox.json to allow these operations.
 - `git init` fails — needs to create `.git/hooks/`. Run it outside pi (`pi --no-sandbox` or normal terminal).
 - Editing `.bashrc` / shell rc files via bash fails. Use Read/Write/Edit tools (in-process, not bash-sandboxed) gated by `pi-claude-permissions`.
 - Installing VSCode / JetBrains workspace configs via bash fails.
@@ -271,10 +274,27 @@ pi --no-sandbox                       disable sandbox for the session
 ```
 
 `/sandbox-init` writes the current default config to:
+
 - `.pi/sandbox.json` (project, default)
-- `~/.pi/agent/sandbox.json` (global, with `global` arg)
+- `<agent-dir>/sandbox.json` (global, with `global` arg)
 
 Use `force` to overwrite an existing file.
+
+### How configs merge
+
+Configuration merges in this order: `DEFAULT_CONFIG` → global → project. Each level **replaces** arrays wholesale — it does **not** concatenate or deduplicate. This is a known behavior from upstream (see [carderne/pi-sandbox#11](https://github.com/carderne/pi-sandbox/issues/11)).
+
+If you want to customize an array in a project-level config, you must restate the full array:
+
+```json
+{
+  "network": {
+    "allowedDomains": ["github.com", "*.github.com", "your-custom-domain.com"]
+  }
+}
+```
+
+If you only include `"your-custom-domain.com"`, the defaults (github.com, npmjs.org, etc.) will be lost. This design allows a project file to completely override defaults, which can be intentional but is a common footgun.
 
 ---
 
@@ -282,3 +302,6 @@ Use `force` to overwrite an existing file.
 
 - [carderne/pi-sandbox](https://github.com/carderne/pi-sandbox) by Chris Arderne — direct upstream
 - [badlogic/pi-mono sandbox example](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/sandbox/index.ts) by Mario Zechner — original code, [MIT License](https://github.com/badlogic/pi-mono/blob/main/LICENSE)
+- [tuansondinh/pi-claude-sandbox](https://github.com/tuansondinh/pi-claude-sandbox) by Son Dinh — intermediate fork
+
+This javapacr fork adds profile-aware config handling, improved network pre-check, blocked-write regex coverage, allowGitConfig documentation/UI visibility, and ui.notify error messaging. Credits to the 2026-08-15 upstream audit for identifying the getConfigPaths bug and related issues.

@@ -7,6 +7,15 @@
  * bubblewrap (Linux) to enforce filesystem and network restrictions at the
  * kernel level.
  *
+ * Forked from carderne/pi-sandbox → tuansondinh/pi-claude-sandbox → javapacr/pi-claude-sandbox.
+ *
+ * This javapacr fork fixes:
+ * - Profile-aware global config path (respects PI_CODING_AGENT_DIR)
+ * - Network pre-check for git remotes and bare hosts
+ * - Blocked-write regex coverage for child-tool errors
+ * - allowGitConfig documentation and UI visibility
+ * - Improved error messaging via ui.notify instead of console.error
+ *
  * Scope:
  *   - Bash subprocesses: kernel-enforced filesystem + network rules
  *   - Domain pre-check: prompt before network egress to non-allowed domains
@@ -22,15 +31,21 @@
  *   (a) Abort (keep blocked)
  *   (b) Allow for this session only  — stored in memory, agent cannot access
  *   (c) Allow for this project       — written to .pi/sandbox.json
- *   (d) Allow for all projects       — written to ~/.pi/agent/sandbox.json
+ *   (d) Allow for all projects       — written to <agent-dir>/sandbox.json
+ *
+ *   (agent-dir is ~/.pi/agent by default, or the profile-specific directory
+ *    set by PI_CODING_AGENT_DIR e.g. ~/.pi/personal or ~/.pi/work)
  *
  * Filesystem rule semantics (applied to bash subprocesses via OS sandbox):
  *   Read:  allowRead OVERRIDES denyRead
  *   Write: denyWrite OVERRIDES allowWrite (most-specific deny wins)
  *
  * Config files (merged, project takes precedence):
- * - ~/.pi/agent/sandbox.json (global)
+ * - <agent-dir>/sandbox.json (global)
  * - <cwd>/.pi/sandbox.json  (project-local)
+ *
+ *   Note: arrays in config files are REPLACED, not merged. A project file
+ *   must restate the full array (see upstream issue carderne/pi-sandbox#11).
  *
  * Example .pi/sandbox.json:
  * ```json
@@ -54,9 +69,9 @@
  * - `pi -e ./sandbox --no-sandbox` - disable sandboxing
  * - `/sandbox` - show current sandbox configuration
  *
- * Setup:
- * 1. Copy sandbox/ directory to ~/.pi/agent/extensions/
- * 2. Run `npm install` in ~/.pi/agent/extensions/sandbox/
+ * Install:
+ * - `pi install git:github.com/javapacr/pi-claude-sandbox` (git install)
+ * - Then add `"git:github.com/javapacr/pi-claude-sandbox"` to profile settings.json
  *
  * Linux also requires: bubblewrap, socat, ripgrep
  */
@@ -66,13 +81,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@carderne/sandbox-runtime";
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   type BashOperations,
   getAgentDir,
   isBashToolResult,
   isToolCallEventType,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 interface SandboxConfig extends SandboxRuntimeConfig {
   enabled?: boolean;
@@ -144,6 +159,9 @@ const DEFAULT_CONFIG: SandboxConfig = {
   },
 };
 
+// Parse warnings collected during loadConfig for later emission via ui.notify
+let parseWarnings: string[] = [];
+
 function loadConfig(cwd: string): SandboxConfig {
   const projectConfigPath = join(cwd, ".pi", "sandbox.json");
   const globalConfigPath = join(getAgentDir(), "sandbox.json");
@@ -155,7 +173,7 @@ function loadConfig(cwd: string): SandboxConfig {
     try {
       globalConfig = JSON.parse(readFileSync(globalConfigPath, "utf-8"));
     } catch (e) {
-      console.error(`Warning: Could not parse ${globalConfigPath}: ${e}`);
+      parseWarnings.push(`Could not parse ${globalConfigPath}: ${e}`);
     }
   }
 
@@ -163,7 +181,7 @@ function loadConfig(cwd: string): SandboxConfig {
     try {
       projectConfig = JSON.parse(readFileSync(projectConfigPath, "utf-8"));
     } catch (e) {
-      console.error(`Warning: Could not parse ${projectConfigPath}: ${e}`);
+      parseWarnings.push(`Could not parse ${projectConfigPath}: ${e}`);
     }
   }
 
@@ -207,13 +225,55 @@ function deepMerge(base: SandboxConfig, overrides: Partial<SandboxConfig>): Sand
 
 // ── Domain helpers ────────────────────────────────────────────────────────────
 
+/**
+ * Extract domains from a command for network pre-check.
+ *
+ * Matches:
+ * - HTTP/HTTPS URLs: https://example.com, http://example.com:8080
+ * - Git remotes (scp-style): git@github.com:user/repo.git
+ * - Git remotes (SSH URLs): ssh://git@github.com/user/repo.git
+ * - SSH/SCP/SFTP: user@host, ssh user@host, scp user@host:path, sftp user@host
+ * - Bare hostnames after curl|wget|ping|dig|host verbs: curl example.com, wget example.com
+ *
+ * Conservative: does not match bare words without preceding verbs to avoid false positives.
+ */
 function extractDomainsFromCommand(command: string): string[] {
-  const urlRegex = /https?:\/\/([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g;
   const domains = new Set<string>();
+
+  // HTTP/HTTPS URLs
+  const urlRegex = /https?:\/\/([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
   let match;
   while ((match = urlRegex.exec(command)) !== null) {
-    domains.add(match[1]);
+    domains.add(match[1].toLowerCase());
   }
+
+  // Git remotes (scp-style): git@github.com:user/repo.git
+  const gitScpRegex = /(?:git\s+)@[a-zA-Z0-9.-]+:|@[a-zA-Z0-9.-]+:/gi;
+  if (gitScpRegex.test(command)) {
+    const gitScpMatch = command.match(/@([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}):/i);
+    if (gitScpMatch) {
+      domains.add(gitScpMatch[1].toLowerCase());
+    }
+  }
+
+  // SSH URLs: ssh://git@github.com/user/repo.git
+  const sshUrlRegex = /ssh:\/\/(?:[a-zA-Z0-9._-]+@)?([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+  while ((match = sshUrlRegex.exec(command)) !== null) {
+    domains.add(match[1].toLowerCase());
+  }
+
+  // SSH/SCP/SFTP: user@host
+  const sshRegex = /(?:ssh|scp|sftp)\s+(?:[a-zA-Z0-9._-]+@)?([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+  while ((match = sshRegex.exec(command)) !== null) {
+    domains.add(match[1].toLowerCase());
+  }
+
+  // Bare hostnames after curl|wget|ping|dig|host
+  const curlWgetRegex = /(?:curl|wget|ping|dig|host)\s+([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+  while ((match = curlWgetRegex.exec(command)) !== null) {
+    domains.add(match[1].toLowerCase());
+  }
+
   return [...domains];
 }
 
@@ -225,7 +285,11 @@ function domainMatchesPattern(domain: string, pattern: string): boolean {
   return domain === pattern;
 }
 
-function domainIsAllowed(domain: string, allowedDomains: string[]): boolean {
+function domainIsAllowed(domain: string, allowedDomains: string[], deniedDomains: string[]): boolean {
+  // Explicit deny always wins
+  if (deniedDomains.some((p) => domainMatchesPattern(domain, p))) {
+    return false;
+  }
   return allowedDomains.some((p) => domainMatchesPattern(domain, p));
 }
 
@@ -234,13 +298,22 @@ function domainIsAllowed(domain: string, allowedDomains: string[]): boolean {
 /**
  * Extract a path from a bash "Operation not permitted" OS sandbox error.
  *
+ * Matches:
+ * - Bash errors: "bash: /path/to/file: Operation not permitted"
+ * - sh errors: "/bin/sh: /path/to/file: Operation not permitted"
+ * - Child-tool errors: "cat: /path/to/file: Operation not permitted", "cp: src: Operation not permitted"
+ * - Bash line-number errors: "bash: line 123: /path/to/file: Operation not permitted"
+ *
  * Bash reports the path exactly as written in the redirect, which can be
  * absolute (`/tmp/.env`), relative (`.env`), or ~-prefixed (`~/.bashrc`).
  * The original regex required a leading slash and missed relative paths,
  * causing the auto-retry/permission flow to silently no-op for those cases.
  */
 function extractBlockedWritePath(output: string, cwd: string): string | null {
-  const match = output.match(/(?:\/bin\/bash|bash|sh): ([^\s:][^:]*): Operation not permitted/);
+  // Match bash/sh errors and child-tool errors (cat, cp, mv, touch, tee, npm, etc.)
+  const match = output.match(
+    /(?:bash|sh|cat|cp|mv|touch|tee|npm|yarn|pip|cargo|gradle|maven|curl|wget|git|make|cmake):(?:\s+line\s+\d+:)?\s+([^\s:][^:]*?): Operation not permitted/i,
+  );
   if (!match) return null;
   const raw = match[1].replace(/^["'`]|["'`]$/g, "").trim();
   if (!raw) return null;
@@ -320,9 +393,17 @@ function getConfigPaths(cwd: string): {
   projectPath: string;
 } {
   return {
-    globalPath: join(homedir(), ".pi", "agent", "sandbox.json"),
+    globalPath: join(getAgentDir(), "sandbox.json"),
     projectPath: join(cwd, ".pi", "sandbox.json"),
   };
+}
+
+/**
+ * Tildify a path for display (replace homedir with ~).
+ */
+function tildify(path: string): string {
+  const home = homedir();
+  return path.startsWith(home) ? "~" + path.slice(home.length) : path;
 }
 
 function readOrEmptyConfig(configPath: string): Partial<SandboxConfig> {
@@ -497,6 +578,9 @@ async function retryBashCommand(
   });
 }
 
+// Hold the merged config at session_start/sandbox-enable for reinitializeSandbox
+let activeMergedConfig: SandboxConfig | null = null;
+
 export default function (pi: ExtensionAPI) {
   pi.registerFlag("no-sandbox", {
     description: "Disable OS-level sandboxing for bash commands",
@@ -528,9 +612,9 @@ export default function (pi: ExtensionAPI) {
     return [...(config.network?.allowedDomains ?? []), ...sessionAllowedDomains];
   }
 
-  function getEffectiveAllowWrite(cwd: string): string[] {
+  function getEffectiveDeniedDomains(cwd: string): string[] {
     const config = loadConfig(cwd);
-    return [...(config.filesystem?.allowWrite ?? []), ...sessionAllowedWritePaths];
+    return config.network?.deniedDomains ?? [];
   }
 
   // ── Sandbox reinitialize ────────────────────────────────────────────────────
@@ -540,6 +624,7 @@ export default function (pi: ExtensionAPI) {
   async function reinitializeSandbox(cwd: string): Promise<void> {
     if (!sandboxInitialized) return;
     const config = loadConfig(cwd);
+    // SAFETY: SandboxRuntimeConfig is the base interface; we know the runtime accepts these extension fields
     const configExt = config as unknown as { allowBrowserProcess?: boolean };
     try {
       await SandboxManager.reset();
@@ -557,26 +642,41 @@ export default function (pi: ExtensionAPI) {
           denyWrite: config.filesystem?.denyWrite ?? [],
         },
         allowBrowserProcess: configExt.allowBrowserProcess,
+        // Preserve these from the active merged config if present
+        ...(activeMergedConfig && {
+          // SAFETY: These fields are known to be on the config after deepMerge if present in overrides
+          ignoreViolations: (activeMergedConfig as unknown as { ignoreViolations?: Record<string, string[]> })
+            .ignoreViolations,
+          enableWeakerNestedSandbox: (activeMergedConfig as unknown as { enableWeakerNestedSandbox?: boolean })
+            .enableWeakerNestedSandbox,
+        }),
         enableWeakerNetworkIsolation: true,
       });
     } catch (e) {
-      console.error(`Warning: Failed to reinitialize sandbox: ${e}`);
+      ctx.ui.notify(`Failed to reinitialize sandbox: ${e}`, "warning");
     }
   }
+
+  // Stub ctx for reinitializeSandbox (will be replaced with real ctx at call sites)
+  let ctx: ExtensionContext = {} as ExtensionContext;
 
   // ── UI prompts ──────────────────────────────────────────────────────────────
 
   async function promptDomainBlock(
     ctx: ExtensionContext,
     domain: string,
+    globalPath: string,
   ): Promise<"abort" | "session" | "project" | "global"> {
     if (!ctx.hasUI) return "abort";
-    const choice = await ctx.ui.select(`🌐 Network blocked: "${domain}" is not in allowedDomains`, [
-      "Abort (keep blocked)",
-      "Allow for this session only",
-      "Allow for this project  →  .pi/sandbox.json",
-      "Allow for all projects  →  ~/.pi/agent/sandbox.json",
-    ]);
+    const choice = await ctx.ui.select(
+      `🌐 Network blocked: "${domain}" is not in allowedDomains`,
+      [
+        "Abort (keep blocked)",
+        "Allow for this session only",
+        "Allow for this project  →  .pi/sandbox.json",
+        `Allow for all projects  →  ${tildify(globalPath)}`,
+      ],
+    );
     if (!choice || choice.startsWith("Abort")) return "abort";
     if (choice.startsWith("Allow for this session")) return "session";
     if (choice.startsWith("Allow for this project")) return "project";
@@ -586,14 +686,18 @@ export default function (pi: ExtensionAPI) {
   async function promptWriteBlock(
     ctx: ExtensionContext,
     filePath: string,
+    globalPath: string,
   ): Promise<"abort" | "session" | "project" | "global"> {
     if (!ctx.hasUI) return "abort";
-    const choice = await ctx.ui.select(`📝 Write blocked: "${filePath}" is not in allowWrite`, [
-      "Abort (keep blocked)",
-      "Allow for this session only",
-      "Allow for this project  →  .pi/sandbox.json",
-      "Allow for all projects  →  ~/.pi/agent/sandbox.json",
-    ]);
+    const choice = await ctx.ui.select(
+      `📝 Write blocked: "${filePath}" is not in allowWrite`,
+      [
+        "Abort (keep blocked)",
+        "Allow for this session only",
+        "Allow for this project  →  .pi/sandbox.json",
+        `Allow for all projects  →  ${tildify(globalPath)}`,
+      ],
+    );
     if (!choice || choice.startsWith("Abort")) return "abort";
     if (choice.startsWith("Allow for this session")) return "session";
     if (choice.startsWith("Allow for this project")) return "project";
@@ -632,11 +736,25 @@ export default function (pi: ExtensionAPI) {
     if (!sandboxEnabled || !sandboxInitialized) return;
 
     const domains = extractDomainsFromCommand(event.command);
-    const effectiveDomains = getEffectiveAllowedDomains(ctx.cwd);
+    const effectiveAllowedDomains = getEffectiveAllowedDomains(ctx.cwd);
+    const effectiveDeniedDomains = getEffectiveDeniedDomains(ctx.cwd);
+    const { globalPath } = getConfigPaths(ctx.cwd);
 
     for (const domain of domains) {
-      if (!domainIsAllowed(domain, effectiveDomains)) {
-        const choice = await promptDomainBlock(ctx, domain);
+      // Pre-check deniedDomains - explicit deny means no grant flow
+      if (effectiveDeniedDomains.some((p) => domainMatchesPattern(domain, p))) {
+        return {
+          result: {
+            output: `[Sandbox] Domain "${domain}" is in deniedDomains — denied by explicit config. Edit sandbox.json to change this.`,
+            exitCode: 1,
+            cancelled: false,
+            truncated: false,
+          },
+        };
+      }
+
+      if (!domainIsAllowed(domain, effectiveAllowedDomains, effectiveDeniedDomains)) {
+        const choice = await promptDomainBlock(ctx, domain, globalPath);
         if (choice === "abort") {
           return {
             result: {
@@ -667,10 +785,21 @@ export default function (pi: ExtensionAPI) {
     if (sandboxEnabled && sandboxInitialized && isToolCallEventType("bash", event)) {
       const originalCommand = event.input.command;
       const domains = extractDomainsFromCommand(originalCommand);
-      const effectiveDomains = getEffectiveAllowedDomains(ctx.cwd);
+      const effectiveAllowedDomains = getEffectiveAllowedDomains(ctx.cwd);
+      const effectiveDeniedDomains = getEffectiveDeniedDomains(ctx.cwd);
+      const { globalPath } = getConfigPaths(ctx.cwd);
+
       for (const domain of domains) {
-        if (!domainIsAllowed(domain, effectiveDomains)) {
-          const choice = await promptDomainBlock(ctx, domain);
+        // Pre-check deniedDomains - explicit deny means no grant flow
+        if (effectiveDeniedDomains.some((p) => domainMatchesPattern(domain, p))) {
+          return {
+            block: true,
+            reason: `[Sandbox] Domain "${domain}" is in deniedDomains — denied by explicit config. Edit sandbox.json to change this.`,
+          };
+        }
+
+        if (!domainIsAllowed(domain, effectiveAllowedDomains, effectiveDeniedDomains)) {
+          const choice = await promptDomainBlock(ctx, domain, globalPath);
           if (choice === "abort") {
             return {
               block: true,
@@ -740,22 +869,29 @@ export default function (pi: ExtensionAPI) {
         `⚠️ "${blockedPath}" matches a denyWrite rule. denyWrite always wins over allowWrite — grant cannot help here. Edit denyWrite manually if needed.`,
         "warning",
       );
+      let hint = `\n\n[Sandbox] Cannot grant write to "${blockedPath}": it matches a denyWrite rule (denyWrite always wins over allowWrite).\n`;
+      hint += `To allow this path, manually remove the matching pattern from denyWrite in:\n  ${tildify(projectPath)}\n  ${tildify(globalPath)}\n`;
+      // Special hint for .git/config and .git/hooks - mandatory denies unless allowGitConfig is true
+      if (
+        blockedPath.includes(".git/config") ||
+        (blockedPath.includes(".git/hooks/") && initialConfig.filesystem?.allowGitConfig !== true)
+      ) {
+        hint += `This is a mandatory deny unless filesystem.allowGitConfig: true is set in sandbox.json.\n`;
+      }
+      hint += `Otherwise, choose a different path or skip this operation.`;
+
       return {
         content: [
           {
             type: "text" as const,
-            text:
-              outputText +
-              `\n\n[Sandbox] Cannot grant write to "${blockedPath}": it matches a denyWrite rule (denyWrite always wins over allowWrite).\n` +
-              `To allow this path, manually remove the matching pattern from denyWrite in:\n  ${projectPath}\n  ${globalPath}\n` +
-              `Otherwise, choose a different path or skip this operation.`,
+            text: outputText + hint,
           },
         ],
         isError: true,
       };
     }
 
-    const choice = await promptWriteBlock(ctx, blockedPath);
+    const choice = await promptWriteBlock(ctx, blockedPath, globalPath);
     if (choice === "abort") return;
 
     await applyWriteChoice(choice, blockedPath, ctx.cwd);
@@ -812,7 +948,9 @@ export default function (pi: ExtensionAPI) {
           text:
             outputText +
             `\n\n[Sandbox] Granted write access for "${blockedPath}", but the auto-retry still hit a block. ` +
-            `If the same path is blocked, denyWrite is overriding allowWrite — inspect ${projectPath} or ${globalPath}. ` +
+            `If the same path is blocked, denyWrite is overriding allowWrite — inspect ${tildify(
+              projectPath,
+            )} or ${tildify(globalPath)}. ` +
             `Otherwise rerun the command and grant the next blocked path when prompted.`,
         },
       ],
@@ -822,16 +960,24 @@ export default function (pi: ExtensionAPI) {
 
   // ── session_start ───────────────────────────────────────────────────────────
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (_event, _ctx) => {
+    ctx = _ctx; // Save real ctx for reinitializeSandbox
+
     const noSandbox = pi.getFlag("no-sandbox") as boolean;
 
     if (noSandbox) {
       sandboxEnabled = false;
-      ctx.ui.notify("Sandbox disabled via --no-sandbox", "warning");
+      ctx.ui.notify("Sandbox disabled via --no-sandbox", "info");
       return;
     }
 
     const config = loadConfig(ctx.cwd);
+
+    // Emit any parse warnings collected during loadConfig
+    if (parseWarnings.length > 0) {
+      ctx.ui.notify(`Sandbox config warnings:\n${parseWarnings.join("\n")}`, "warning");
+      parseWarnings = [];
+    }
 
     if (!config.enabled) {
       sandboxEnabled = false;
@@ -847,6 +993,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     try {
+      // SAFETY: SandboxRuntimeConfig is the base interface; we know the runtime accepts these extension fields
       const configExt = config as unknown as {
         ignoreViolations?: Record<string, string[]>;
         enableWeakerNestedSandbox?: boolean;
@@ -872,6 +1019,9 @@ export default function (pi: ExtensionAPI) {
       if (supportsEnvProxy) {
         process.env.NODE_USE_ENV_PROXY ??= "1";
       }
+
+      // Hold merged config for reinitializeSandbox to preserve session allowances
+      activeMergedConfig = config;
 
       sandboxEnabled = true;
       sandboxInitialized = true;
@@ -919,6 +1069,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       try {
+        // SAFETY: SandboxRuntimeConfig is the base interface; we know the runtime accepts these extension fields
         const configExt = config as unknown as {
           ignoreViolations?: Record<string, string[]>;
           enableWeakerNestedSandbox?: boolean;
@@ -933,6 +1084,9 @@ export default function (pi: ExtensionAPI) {
           allowBrowserProcess: configExt.allowBrowserProcess,
           enableWeakerNetworkIsolation: true,
         });
+
+        // Hold merged config for reinitializeSandbox to preserve session allowances
+        activeMergedConfig = config;
 
         sandboxEnabled = true;
         sandboxInitialized = true;
@@ -988,7 +1142,7 @@ export default function (pi: ExtensionAPI) {
 
       if (existsSync(targetPath) && !force) {
         ctx.ui.notify(
-          `Config already exists at ${targetPath}.\n` +
+          `Config already exists at ${tildify(targetPath)}.\n` +
             `Use \`/sandbox-init ${scope} force\` to overwrite.`,
           "warning",
         );
@@ -998,13 +1152,13 @@ export default function (pi: ExtensionAPI) {
       try {
         writeConfigFile(targetPath, DEFAULT_CONFIG);
         ctx.ui.notify(
-          `Wrote default sandbox config to ${targetPath}.\n` +
+          `Wrote default sandbox config to ${tildify(targetPath)}.\n` +
             `Edit it to customize, then run /sandbox-disable + /sandbox-enable to reload.`,
           "info",
         );
       } catch (e) {
         ctx.ui.notify(
-          `Failed to write ${targetPath}: ${e instanceof Error ? e.message : e}`,
+          `Failed to write ${tildify(targetPath)}: ${e instanceof Error ? e.message : e}`,
           "error",
         );
       }
@@ -1024,10 +1178,10 @@ export default function (pi: ExtensionAPI) {
 
       const lines = [
         "Sandbox Configuration",
-        `  Project config: ${projectPath}`,
-        `  Global config:  ${globalPath}`,
+        `  Project config: ${tildify(projectPath)}`,
+        `  Global config:  ${tildify(globalPath)}`,
         "",
-        "Network (bash + !cmd):",
+        "Network (bash subprocesses):",
         `  Allowed domains: ${config.network?.allowedDomains?.join(", ") || "(none)"}`,
         `  Denied domains:  ${config.network?.deniedDomains?.join(", ") || "(none)"}`,
         ...(sessionAllowedDomains.length > 0
@@ -1039,6 +1193,9 @@ export default function (pi: ExtensionAPI) {
         `  Allow Read:  ${config.filesystem?.allowRead?.join(", ") || "(none)"}`,
         `  Allow Write: ${config.filesystem?.allowWrite?.join(", ") || "(none)"}`,
         `  Deny Write:  ${config.filesystem?.denyWrite?.join(", ") || "(none)"}`,
+        ...(config.filesystem?.allowGitConfig === undefined
+          ? []
+          : [`  allowGitConfig: ${config.filesystem.allowGitConfig}`]),
         ...(sessionAllowedWritePaths.length > 0
           ? [`  Session write: ${sessionAllowedWritePaths.join(", ")}`]
           : []),
