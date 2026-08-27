@@ -832,7 +832,9 @@ export default function (pi: ExtensionAPI) {
 
       // Wrap with OS sandbox (sandbox-exec / bwrap).
       try {
-        event.input.command = await SandboxManager.wrapWithSandbox(originalCommand);
+        event.input.command = fixShellQuoteBangEscape(
+          await SandboxManager.wrapWithSandbox(originalCommand),
+        );
         // Stash unwrapped command so tool_result can re-execute on grant.
         originalCommandsByToolCallId.set(event.toolCallId, originalCommand);
       } catch (err) {
