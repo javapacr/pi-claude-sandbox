@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-sandbox",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Claude-style OS-level sandboxing for pi with interactive permission prompts. Coexists with pi-tool-display and other bash-overriding extensions. Forked from carderne/pi-sandbox, then forked by javapacr for profile-aware config handling and documentation fixes.",
   "keywords": [
     "pi-package",
@@ -38,7 +38,7 @@
     "ci:check": "npm run check"
   },
   "dependencies": {
-    "@carderne/sandbox-runtime": "^0.0.43"
+    "@carderne/sandbox-runtime": "^0.0.70"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

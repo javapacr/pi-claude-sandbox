@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.1] - 2026-08-27
+
+### Fixed
+
+- **Bang-escape command corruption** (upstream bug, inherited): `@carderne/sandbox-runtime` ≤0.0.4x wrapped every bash command with npm `shell-quote`'s `quote()`, which escapes `!` as `\!` inside double-quoted strings (a zsh interactive-safety guard). Non-interactive `bash -c` preserves the backslash literally, so any command containing both a single quote and a `!` was corrupted — most visibly python one-liners (`!=` → `\!=` → `SyntaxError`). Present in every shell-quote release since 1.8.1 (2023); verified against 1.8.1–1.10.0.
+  - Bumped `@carderne/sandbox-runtime` `^0.0.43` → `^0.0.70`: upstream replaced npm shell-quote with a custom POSIX single-quote-only `quote()` (`utils/shell-quote.js`) — root cause fixed at the source.
+  - Added `fixShellQuoteBangEscape()` at both wrap sites (`createSandboxedBashOps().exec`, `retryBashCommand`) as defense-in-depth: un-escapes `\!` → `!` only inside double-quoted spans; bare-word `\!` outside quotes is valid shell and left untouched. Covered by `tests/fix-bang.test.mjs` (10 assertions).
+- **Adapted to 0.0.70 schema**: `filesystem.allowGitConfig` and the mandatory `.git/config`/`.git/hooks` denies were removed upstream — dropped the corresponding `/sandbox` display row and denyWrite hint (they referenced config keys that no longer exist; with the mandatory deny gone, the hint can never fire).
+
 ## [0.7.0] - 2026-08-26
 
 This is the javapacr fork, building on tuansondinh/pi-claude-sandbox 0.6.0.

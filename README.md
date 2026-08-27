@@ -305,3 +305,8 @@ If you only include `"your-custom-domain.com"`, the defaults (github.com, npmjs.
 - [tuansondinh/pi-claude-sandbox](https://github.com/tuansondinh/pi-claude-sandbox) by Son Dinh — intermediate fork
 
 This javapacr fork adds profile-aware config handling, improved network pre-check, blocked-write regex coverage, allowGitConfig documentation/UI visibility, and ui.notify error messaging. Credits to the 2026-08-15 upstream audit for identifying the getConfigPaths bug and related issues.
+
+## Local patches against upstream
+
+- **`!`-corruption fix (0.7.1)**: upstream ≤0.0.4x quoting escaped `!` → `\!` inside double quotes, corrupting commands like `python -c "if x != y: ..."` under non-interactive `bash -c`. Fixed by the `^0.0.70` runtime bump (upstream's custom single-quote-only `quote()`) plus a local `fixShellQuoteBangEscape()` guard in `index.ts` (see CHANGELOG 0.7.1). If a future runtime bump regresses quoting, the guard keeps commands safe and the test (`tests/fix-bang.test.mjs`) catches it.
+- Note: `filesystem.allowGitConfig`, documented above for ≤0.7.0, no longer exists in runtime 0.0.70 — upstream removed both the config key and the mandatory `.git/config`/`.git/hooks` write denies. Git config writes are now governed by ordinary `denyWrite`/`allowWrite` rules.

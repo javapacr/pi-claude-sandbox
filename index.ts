@@ -447,6 +447,22 @@ function addWritePathToConfig(configPath: string, pathToAdd: string): void {
   }
 }
 
+// ── Shell-quote bang-escape fix ────────────────────────────────────────────────
+//
+// shell-quote's quote() escapes '!' as '\!' inside double-quoted strings
+// (a zsh interactive-safety guard). Non-interactive `bash -c` preserves the
+// backslash literally, corrupting commands like python `!=`.
+//
+// Upstream fix: @carderne/sandbox-runtime >=0.0.70 ships a custom quote()
+// implementation that uses single-quoting exclusively, avoiding this bug.
+// This function remains as defense-in-depth for future breakage.
+//
+// Undo `\!` → `!` ONLY inside double-quoted spans of the wrapped command.
+// Bare-word `\!` outside quotes is valid shell and left alone.
+function fixShellQuoteBangEscape(s: string): string {
+  return s.replace(/"(?:[^"\\]|\\.)*"/g, (m) => m.replace(/\\!/g, "!"));
+}
+
 // ── Sandboxed bash ops ────────────────────────────────────────────────────────
 
 function createSandboxedBashOps(): BashOperations {
@@ -456,7 +472,9 @@ function createSandboxedBashOps(): BashOperations {
         throw new Error(`Working directory does not exist: ${cwd}`);
       }
 
-      const wrappedCommand = await SandboxManager.wrapWithSandbox(command);
+      const wrappedCommand = fixShellQuoteBangEscape(
+        await SandboxManager.wrapWithSandbox(command),
+      );
 
       return new Promise((resolve, reject) => {
         const child = spawn("bash", ["-c", wrappedCommand], {
@@ -536,7 +554,9 @@ async function retryBashCommand(
     throw new Error(`Working directory does not exist: ${cwd}`);
   }
 
-  const wrappedCommand = await SandboxManager.wrapWithSandbox(command);
+  const wrappedCommand = fixShellQuoteBangEscape(
+    await SandboxManager.wrapWithSandbox(command),
+  );
 
   return new Promise((resolveExec, rejectExec) => {
     const child = spawn("bash", ["-c", wrappedCommand], {
@@ -871,13 +891,6 @@ export default function (pi: ExtensionAPI) {
       );
       let hint = `\n\n[Sandbox] Cannot grant write to "${blockedPath}": it matches a denyWrite rule (denyWrite always wins over allowWrite).\n`;
       hint += `To allow this path, manually remove the matching pattern from denyWrite in:\n  ${tildify(projectPath)}\n  ${tildify(globalPath)}\n`;
-      // Special hint for .git/config and .git/hooks - mandatory denies unless allowGitConfig is true
-      if (
-        (blockedPath.includes(".git/config") || blockedPath.includes(".git/hooks/")) &&
-        initialConfig.filesystem?.allowGitConfig !== true
-      ) {
-        hint += `This is a mandatory deny unless filesystem.allowGitConfig: true is set in sandbox.json.\n`;
-      }
       hint += `Otherwise, choose a different path or skip this operation.`;
 
       return {
@@ -1193,9 +1206,6 @@ export default function (pi: ExtensionAPI) {
         `  Allow Read:  ${config.filesystem?.allowRead?.join(", ") || "(none)"}`,
         `  Allow Write: ${config.filesystem?.allowWrite?.join(", ") || "(none)"}`,
         `  Deny Write:  ${config.filesystem?.denyWrite?.join(", ") || "(none)"}`,
-        ...(config.filesystem?.allowGitConfig === undefined
-          ? []
-          : [`  allowGitConfig: ${config.filesystem.allowGitConfig}`]),
         ...(sessionAllowedWritePaths.length > 0
           ? [`  Session write: ${sessionAllowedWritePaths.join(", ")}`]
           : []),
