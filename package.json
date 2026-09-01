@@ -33,6 +33,7 @@
     "fmt": "oxfmt index.ts",
     "lint": "oxlint index.ts",
     "check": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
     "ci:fmt": "oxfmt --check index.ts",
     "ci:lint": "npm run lint",
     "ci:check": "npm run check"

@@ -91,11 +91,23 @@ import {
 
 interface SandboxConfig extends SandboxRuntimeConfig {
   enabled?: boolean;
+  network: NonNullable<SandboxRuntimeConfig["network"]> & {
+    /** Route ordinary `ssh` commands through the sandbox SOCKS proxy. */
+    sshProxy?: boolean;
+  };
 }
 
 const DEFAULT_CONFIG: SandboxConfig = {
   enabled: true,
   network: {
+    // Upstream #61: unauthenticated local SOCKS proxy lets Git-over-SSH work
+    // with the built-in nc. Domain filtering still applies, but another local
+    // process that discovers the temporary proxy port can use it while the
+    // sandbox is running.
+    allowUnauthenticatedSocksProxy: process.platform === "darwin",
+    // Upstream #71: route ssh (and git's exec'd ssh binary) through the SOCKS
+    // proxy via ProxyCommand; see buildSshProxyPreamble.
+    sshProxy: true,
     allowedDomains: [
       "npmjs.org",
       "*.npmjs.org",
@@ -115,15 +127,7 @@ const DEFAULT_CONFIG: SandboxConfig = {
     // hard-denied. No broad home-dir deny — tools need to read tons of files,
     // and a subprocess reading ~/Documents isn't a real threat (network egress
     // is already constrained by the proxy).
-    denyRead: [
-      ".env",
-      ".env.*",
-      "*.pem",
-      "*.key",
-      "~/.ssh",
-      "~/.aws",
-      "~/.gnupg",
-    ],
+    denyRead: [".env", ".env.*", "*.pem", "*.key", "~/.ssh", "~/.aws", "~/.gnupg"],
     // Empty allowRead: nothing to punch holes through. denyRead entries are
     // hard (no grant flow for reads). User can still add specific paths here
     // to override denyRead if truly needed.
@@ -263,13 +267,15 @@ function extractDomainsFromCommand(command: string): string[] {
   }
 
   // SSH/SCP/SFTP: user@host
-  const sshRegex = /(?:ssh|scp|sftp)\s+(?:[a-zA-Z0-9._-]+@)?([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+  const sshRegex =
+    /(?:ssh|scp|sftp)\s+(?:[a-zA-Z0-9._-]+@)?([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
   while ((match = sshRegex.exec(command)) !== null) {
     domains.add(match[1].toLowerCase());
   }
 
   // Bare hostnames after curl|wget|ping|dig|host
-  const curlWgetRegex = /\b(?:curl|wget|ping|dig|host)\s+([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
+  const curlWgetRegex =
+    /\b(?:curl|wget|ping|dig|host)\s+([a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/gi;
   while ((match = curlWgetRegex.exec(command)) !== null) {
     domains.add(match[1].toLowerCase());
   }
@@ -285,7 +291,11 @@ function domainMatchesPattern(domain: string, pattern: string): boolean {
   return domain === pattern;
 }
 
-function domainIsAllowed(domain: string, allowedDomains: string[], deniedDomains: string[]): boolean {
+function domainIsAllowed(
+  domain: string,
+  allowedDomains: string[],
+  deniedDomains: string[],
+): boolean {
   // Explicit deny always wins
   if (deniedDomains.some((p) => domainMatchesPattern(domain, p))) {
     return false;
@@ -463,17 +473,39 @@ function fixShellQuoteBangEscape(s: string): string {
   return s.replace(/"(?:[^"\\]|\\.)*"/g, (m) => m.replace(/\\!/g, "!"));
 }
 
+/**
+ * Upstream #71 (technique port): on macOS, OpenSSH ignores ALL_PROXY, so ssh
+ * (and git's exec'd ssh binary) bypass the sandbox's network proxy and die
+ * with EPERM. When the runtime SOCKS proxy is running (network
+ * .allowUnauthenticatedSocksProxy), return a shell preamble that (a) defines
+ * an ssh() function wrapping /usr/bin/ssh with a ProxyCommand through the
+ * local SOCKS proxy, and (b) exports GIT_SSH_COMMAND with the same option —
+ * the env var is what reaches `git push/pull`, since git execs the ssh BINARY
+ * and never sees shell functions. nc -X 5 is macOS/BSD nc (SOCKS v5).
+ * Returns "" when disabled, off-darwin, or the proxy port is unavailable
+ * (ssh then fails inside the sandbox as before — acceptable fallback).
+ * Contains no "!" so it passes through fixShellQuoteBangEscape untouched.
+ */
+export function buildSshProxyPreamble(sshProxyEnabled: boolean): string {
+  if (!sshProxyEnabled || process.platform !== "darwin") return "";
+  const socksProxyPort = SandboxManager.getSocksProxyPort();
+  if (socksProxyPort === undefined) return "";
+  const proxyOpt = `-o 'ProxyCommand=/usr/bin/nc -X 5 -x localhost:${socksProxyPort} %h %p'`;
+  return `ssh() { /usr/bin/ssh ${proxyOpt} "$@"; }; export GIT_SSH_COMMAND="/usr/bin/ssh ${proxyOpt}"; `;
+}
+
 // ── Sandboxed bash ops ────────────────────────────────────────────────────────
 
-function createSandboxedBashOps(): BashOperations {
+function createSandboxedBashOps(sshProxyEnabled = true): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (!existsSync(cwd)) {
         throw new Error(`Working directory does not exist: ${cwd}`);
       }
 
+      const commandToWrap = buildSshProxyPreamble(sshProxyEnabled) + command;
       const wrappedCommand = fixShellQuoteBangEscape(
-        await SandboxManager.wrapWithSandbox(command),
+        await SandboxManager.wrapWithSandbox(commandToWrap),
       );
 
       return new Promise((resolve, reject) => {
@@ -554,9 +586,7 @@ async function retryBashCommand(
     throw new Error(`Working directory does not exist: ${cwd}`);
   }
 
-  const wrappedCommand = fixShellQuoteBangEscape(
-    await SandboxManager.wrapWithSandbox(command),
-  );
+  const wrappedCommand = fixShellQuoteBangEscape(await SandboxManager.wrapWithSandbox(command));
 
   return new Promise((resolveExec, rejectExec) => {
     const child = spawn("bash", ["-c", wrappedCommand], {
@@ -665,10 +695,12 @@ export default function (pi: ExtensionAPI) {
         // Preserve these from the active merged config if present
         ...(activeMergedConfig && {
           // SAFETY: These fields are known to be on the config after deepMerge if present in overrides
-          ignoreViolations: (activeMergedConfig as unknown as { ignoreViolations?: Record<string, string[]> })
-            .ignoreViolations,
-          enableWeakerNestedSandbox: (activeMergedConfig as unknown as { enableWeakerNestedSandbox?: boolean })
-            .enableWeakerNestedSandbox,
+          ignoreViolations: (
+            activeMergedConfig as unknown as { ignoreViolations?: Record<string, string[]> }
+          ).ignoreViolations,
+          enableWeakerNestedSandbox: (
+            activeMergedConfig as unknown as { enableWeakerNestedSandbox?: boolean }
+          ).enableWeakerNestedSandbox,
         }),
         enableWeakerNetworkIsolation: true,
       });
@@ -688,15 +720,12 @@ export default function (pi: ExtensionAPI) {
     globalPath: string,
   ): Promise<"abort" | "session" | "project" | "global"> {
     if (!ctx.hasUI) return "abort";
-    const choice = await ctx.ui.select(
-      `🌐 Network blocked: "${domain}" is not in allowedDomains`,
-      [
-        "Abort (keep blocked)",
-        "Allow for this session only",
-        "Allow for this project  →  .pi/sandbox.json",
-        `Allow for all projects  →  ${tildify(globalPath)}`,
-      ],
-    );
+    const choice = await ctx.ui.select(`🌐 Network blocked: "${domain}" is not in allowedDomains`, [
+      "Abort (keep blocked)",
+      "Allow for this session only",
+      "Allow for this project  →  .pi/sandbox.json",
+      `Allow for all projects  →  ${tildify(globalPath)}`,
+    ]);
     if (!choice || choice.startsWith("Abort")) return "abort";
     if (choice.startsWith("Allow for this session")) return "session";
     if (choice.startsWith("Allow for this project")) return "project";
@@ -709,15 +738,12 @@ export default function (pi: ExtensionAPI) {
     globalPath: string,
   ): Promise<"abort" | "session" | "project" | "global"> {
     if (!ctx.hasUI) return "abort";
-    const choice = await ctx.ui.select(
-      `📝 Write blocked: "${filePath}" is not in allowWrite`,
-      [
-        "Abort (keep blocked)",
-        "Allow for this session only",
-        "Allow for this project  →  .pi/sandbox.json",
-        `Allow for all projects  →  ${tildify(globalPath)}`,
-      ],
-    );
+    const choice = await ctx.ui.select(`📝 Write blocked: "${filePath}" is not in allowWrite`, [
+      "Abort (keep blocked)",
+      "Allow for this session only",
+      "Allow for this project  →  .pi/sandbox.json",
+      `Allow for all projects  →  ${tildify(globalPath)}`,
+    ]);
     if (!choice || choice.startsWith("Abort")) return "abort";
     if (choice.startsWith("Allow for this session")) return "session";
     if (choice.startsWith("Allow for this project")) return "project";
@@ -753,6 +779,7 @@ export default function (pi: ExtensionAPI) {
   // ── user_bash — network pre-check ──────────────────────────────────────────
 
   pi.on("user_bash", async (event, ctx) => {
+    const config = loadConfig(ctx.cwd);
     if (!sandboxEnabled || !sandboxInitialized) return;
 
     const domains = extractDomainsFromCommand(event.command);
@@ -789,7 +816,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    return { operations: createSandboxedBashOps() };
+    return { operations: createSandboxedBashOps(config.network?.sshProxy !== false) };
   });
 
   // ── tool_call — network pre-check for bash + wrap with OS sandbox
@@ -832,11 +859,19 @@ export default function (pi: ExtensionAPI) {
 
       // Wrap with OS sandbox (sandbox-exec / bwrap).
       try {
+        // Upstream #71: route ssh through the runtime SOCKS proxy on macOS
+        // (git needs GIT_SSH_COMMAND — see buildSshProxyPreamble). Prepend
+        // BEFORE wrap so the whole string goes through the bang-escape guard
+        // once. The stash keeps the preamble too, so grant-flow re-execution
+        // (retryBashCommand) stays proxied. Domain pre-check above still runs
+        // on originalCommand — the preamble adds no network domains.
+        const commandToWrap =
+          buildSshProxyPreamble(config.network?.sshProxy !== false) + originalCommand;
         event.input.command = fixShellQuoteBangEscape(
-          await SandboxManager.wrapWithSandbox(originalCommand),
+          await SandboxManager.wrapWithSandbox(commandToWrap),
         );
         // Stash unwrapped command so tool_result can re-execute on grant.
-        originalCommandsByToolCallId.set(event.toolCallId, originalCommand);
+        originalCommandsByToolCallId.set(event.toolCallId, commandToWrap);
       } catch (err) {
         ctx.ui.notify(
           `Sandbox wrap failed: ${err instanceof Error ? err.message : err}. Running unsandboxed.`,
@@ -1041,10 +1076,7 @@ export default function (pi: ExtensionAPI) {
       sandboxEnabled = true;
       sandboxInitialized = true;
 
-      ctx.ui.setStatus(
-        "sandbox",
-        ctx.ui.theme.fg("success", "🔒 Sandbox"),
-      );
+      ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("success", "🔒 Sandbox"));
     } catch (err) {
       sandboxEnabled = false;
       ctx.ui.notify(
@@ -1106,10 +1138,7 @@ export default function (pi: ExtensionAPI) {
         sandboxEnabled = true;
         sandboxInitialized = true;
 
-        ctx.ui.setStatus(
-          "sandbox",
-          ctx.ui.theme.fg("success", "🔒 Sandbox"),
-        );
+        ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("success", "🔒 Sandbox"));
         ctx.ui.notify("Sandbox enabled", "info");
       } catch (err) {
         ctx.ui.notify(

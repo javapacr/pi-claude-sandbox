@@ -117,6 +117,13 @@ macOS works out of the box via built-in `sandbox-exec`.
 
 The global config path is `~/.pi/agent/sandbox.json` by default, or the profile-specific directory set by `PI_CODING_AGENT_DIR` (e.g. `~/.pi/personal/sandbox.json` or `~/.pi/work/sandbox.json`).
 
+### Git-over-SSH on macOS
+
+Two network keys control ssh handling (both default to `true` on macOS; ported from upstream #61 + #71):
+
+- `network.allowUnauthenticatedSocksProxy` — starts the runtime's local SOCKS proxy so Git-over-SSH works with the built-in `nc`. Domain filtering still applies, but another local process that discovers the temporary proxy port can use it while the sandbox is running.
+- `network.sshProxy` — routes ordinary `ssh` commands (and `git push`/`git pull` over ssh remotes, via `GIT_SSH_COMMAND`) through that SOCKS proxy with a `ProxyCommand=/usr/bin/nc -X 5 -x localhost:<port>` wrapper. Set it to `false` to opt out.
+
 Defaults are sensible; you usually don't need to change them. Full example:
 
 ```json
