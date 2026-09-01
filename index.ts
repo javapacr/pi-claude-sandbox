@@ -78,6 +78,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@carderne/sandbox-runtime";
@@ -485,13 +486,41 @@ function fixShellQuoteBangEscape(s: string): string {
  * Returns "" when disabled, off-darwin, or the proxy port is unavailable
  * (ssh then fails inside the sandbox as before — acceptable fallback).
  * Contains no "!" so it passes through fixShellQuoteBangEscape untouched.
+ * Async: verifies the proxy port actually serves a SOCKS5 no-auth handshake
+ * (\x05\x00) before injecting; a port that accepts TCP but closes the
+ * handshake (reinit window) yields "" so ssh behaves exactly as pre-port.
  */
-export function buildSshProxyPreamble(sshProxyEnabled: boolean): string {
+export async function buildSshProxyPreamble(sshProxyEnabled: boolean): Promise<string> {
   if (!sshProxyEnabled || process.platform !== "darwin") return "";
   const socksProxyPort = SandboxManager.getSocksProxyPort();
   if (socksProxyPort === undefined) return "";
   const proxyOpt = `-o 'ProxyCommand=/usr/bin/nc -X 5 -x localhost:${socksProxyPort} %h %p'`;
+  const ready = await isSocksProxyReady(socksProxyPort);
+  if (!ready) return "";
   return `ssh() { /usr/bin/ssh ${proxyOpt} "$@"; }; export GIT_SSH_COMMAND="/usr/bin/ssh ${proxyOpt}"; `;
+}
+
+/**
+ * Probe a TCP port for a SOCKS5 no-auth handshake: connect, send the greeting
+ * (5, 1, 0), and expect a (5, 0) selection reply. Resolves false on any
+ * refusal, timeout, or handshake mismatch. Used to skip proxy injection while
+ * the sandbox proxy port is mid-reinit (accepts TCP but closes the handshake).
+ */
+export function isSocksProxyReady(port: number, timeoutMs = 250): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    const done = (ok: boolean) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => socket.write(Uint8Array.of(5, 1, 0)));
+    socket.once("data", (d: Buffer) => done(d.length >= 2 && d[0] === 5 && d[1] === 0));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+    socket.once("close", () => done(false));
+    socket.connect(port, "localhost");
+  });
 }
 
 // ── Sandboxed bash ops ────────────────────────────────────────────────────────
@@ -503,7 +532,7 @@ function createSandboxedBashOps(sshProxyEnabled = true): BashOperations {
         throw new Error(`Working directory does not exist: ${cwd}`);
       }
 
-      const commandToWrap = buildSshProxyPreamble(sshProxyEnabled) + command;
+      const commandToWrap = (await buildSshProxyPreamble(sshProxyEnabled)) + command;
       const wrappedCommand = fixShellQuoteBangEscape(
         await SandboxManager.wrapWithSandbox(commandToWrap),
       );
@@ -628,6 +657,65 @@ async function retryBashCommand(
   });
 }
 
+// I-1: keeps the host event loop warm so the sandbox manager stays valid
+// between tool calls; 60-min idle cap as a hard failsafe.
+const KEEP_ALIVE_TICK_MS = 30_000;
+const KEEP_ALIVE_GRACE_MS = 250;
+const KEEP_ALIVE_IDLE_CAP_MS = 60 * 60 * 1000;
+let keepAliveTimer: NodeJS.Timeout | null = null;
+let keepAliveCapTimer: NodeJS.Timeout | null = null;
+let keepAliveGraceTimer: NodeJS.Timeout | null = null;
+export function isKeepAliveActive(): boolean {
+  return keepAliveTimer !== null;
+}
+export function armKeepAlive(): void {
+  if (keepAliveGraceTimer) {
+    clearTimeout(keepAliveGraceTimer);
+    keepAliveGraceTimer = null;
+  }
+  if (keepAliveTimer) return;
+  keepAliveTimer = setInterval(() => {}, KEEP_ALIVE_TICK_MS);
+  keepAliveCapTimer = setTimeout(() => releaseKeepAlive(), KEEP_ALIVE_IDLE_CAP_MS);
+  keepAliveCapTimer.unref?.();
+}
+export function releaseKeepAlive(): void {
+  if (keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+  }
+  if (keepAliveCapTimer) {
+    clearTimeout(keepAliveCapTimer);
+    keepAliveCapTimer = null;
+  }
+  if (keepAliveGraceTimer) {
+    clearTimeout(keepAliveGraceTimer);
+    keepAliveGraceTimer = null;
+  }
+}
+export function releaseKeepAliveWithGrace(): void {
+  if (!keepAliveTimer) return;
+  if (keepAliveGraceTimer) clearTimeout(keepAliveGraceTimer);
+  keepAliveGraceTimer = setTimeout(() => {
+    keepAliveGraceTimer = null;
+    releaseKeepAlive();
+  }, KEEP_ALIVE_GRACE_MS);
+  keepAliveGraceTimer.unref?.();
+}
+
+// I-2: fail loudly when long sandbox-manager ops hang instead of wedging the
+// session silently.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let t: NodeJS.Timeout | undefined;
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => {
+      t = setTimeout(() => rej(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]).finally(() => {
+    if (t) clearTimeout(t);
+  }) as Promise<T>;
+}
+
 // Hold the merged config at session_start/sandbox-enable for reinitializeSandbox
 let activeMergedConfig: SandboxConfig | null = null;
 
@@ -698,6 +786,7 @@ export default function (pi: ExtensionAPI) {
           ignoreViolations: (
             activeMergedConfig as unknown as { ignoreViolations?: Record<string, string[]> }
           ).ignoreViolations,
+          // SAFETY: These fields are known to be on the config after deepMerge if present in overrides
           enableWeakerNestedSandbox: (
             activeMergedConfig as unknown as { enableWeakerNestedSandbox?: boolean }
           ).enableWeakerNestedSandbox,
@@ -830,6 +919,7 @@ export default function (pi: ExtensionAPI) {
     // instead we mutate event.input.command so the active bash tool runs the
     // OS-sandboxed command. ToolCallEvent input is mutable per pi docs.
     if (sandboxEnabled && sandboxInitialized && isToolCallEventType("bash", event)) {
+      armKeepAlive(); // I-1: arm on activity
       const originalCommand = event.input.command;
       const domains = extractDomainsFromCommand(originalCommand);
       const effectiveAllowedDomains = getEffectiveAllowedDomains(ctx.cwd);
@@ -866,7 +956,7 @@ export default function (pi: ExtensionAPI) {
         // (retryBashCommand) stays proxied. Domain pre-check above still runs
         // on originalCommand — the preamble adds no network domains.
         const commandToWrap =
-          buildSshProxyPreamble(config.network?.sshProxy !== false) + originalCommand;
+          (await buildSshProxyPreamble(config.network?.sshProxy !== false)) + originalCommand;
         event.input.command = fixShellQuoteBangEscape(
           await SandboxManager.wrapWithSandbox(commandToWrap),
         );
@@ -1008,6 +1098,16 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
+  // I-1: arm on activity, graceful release between turns, hard release at
+  // agent end/shutdown.
+  pi.on("turn_end", async () => {
+    releaseKeepAliveWithGrace();
+  });
+
+  pi.on("agent_end", async () => {
+    releaseKeepAlive();
+  });
+
   // ── session_start ───────────────────────────────────────────────────────────
 
   pi.on("session_start", async (_event, _ctx) => {
@@ -1050,14 +1150,18 @@ export default function (pi: ExtensionAPI) {
         allowBrowserProcess?: boolean;
       };
 
-      await SandboxManager.initialize({
-        network: config.network,
-        filesystem: config.filesystem,
-        ignoreViolations: configExt.ignoreViolations,
-        enableWeakerNestedSandbox: configExt.enableWeakerNestedSandbox,
-        allowBrowserProcess: configExt.allowBrowserProcess,
-        enableWeakerNetworkIsolation: true,
-      });
+      await withTimeout(
+        SandboxManager.initialize({
+          network: config.network,
+          filesystem: config.filesystem,
+          ignoreViolations: configExt.ignoreViolations,
+          enableWeakerNestedSandbox: configExt.enableWeakerNestedSandbox,
+          allowBrowserProcess: configExt.allowBrowserProcess,
+          enableWeakerNetworkIsolation: true,
+        }),
+        30_000,
+        "Sandbox initialization",
+      );
 
       // Make Node's built-in fetch() honour HTTP_PROXY / HTTPS_PROXY in this
       // process and any child processes that inherit the environment.
@@ -1075,6 +1179,7 @@ export default function (pi: ExtensionAPI) {
 
       sandboxEnabled = true;
       sandboxInitialized = true;
+      armKeepAlive(); // I-1: keep the loop warm across the session
 
       ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("success", "🔒 Sandbox"));
     } catch (err) {
@@ -1089,9 +1194,10 @@ export default function (pi: ExtensionAPI) {
   // ── session_shutdown ────────────────────────────────────────────────────────
 
   pi.on("session_shutdown", async () => {
+    releaseKeepAlive(); // I-1: hard release at shutdown
     if (sandboxInitialized) {
       try {
-        await SandboxManager.reset();
+        await withTimeout(SandboxManager.reset(), 10_000, "Sandbox reset").catch(() => {});
       } catch {
         // Ignore cleanup errors
       }
