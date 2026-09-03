@@ -121,7 +121,7 @@ The global config path is `~/.pi/agent/sandbox.json` by default, or the profile-
 
 Two network keys control ssh handling (both default to `true` on macOS; ported from upstream #61 + #71):
 
-- `network.allowUnauthenticatedSocksProxy` — starts the runtime's local SOCKS proxy so Git-over-SSH works with the built-in `nc`. Domain filtering still applies, but another local process that discovers the temporary proxy port can use it while the sandbox is running.
+- `network.allowUnauthenticatedSocksProxy` — starts the runtime's local SOCKS proxy and routes ssh/Git-over-SSH through the built-in `nc`. Domain filtering still applies, and the relay completes ONLY for destinations the upstream proxy will CONNECT to: raw port 22 is currently refused (SOCKS error 2 — verified 2026-09-02 in fresh sessions, anchor and repo cwd alike), so Git-over-SSH over `:22` does NOT work end-to-end despite the injection chain engaging. SSH-over-443 (`ssh.github.com -p 443`) is the plausible workaround if the relay allows `:443` CONNECTs (unverified). Another local process that discovers the temporary proxy port can use it while the sandbox is running.
 - `network.sshProxy` — routes ordinary `ssh` commands (and `git push`/`git pull` over ssh remotes, via `GIT_SSH_COMMAND`) through that SOCKS proxy with a `ProxyCommand=/usr/bin/nc -X 5 -x localhost:<port>` wrapper. Set it to `false` to opt out.
 
 Defaults are sensible; you usually don't need to change them. Full example:
