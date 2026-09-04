@@ -317,3 +317,13 @@ This javapacr fork adds profile-aware config handling, improved network pre-chec
 
 - **`!`-corruption fix (0.7.1)**: upstream ≤0.0.4x quoting escaped `!` → `\!` inside double quotes, corrupting commands like `python -c "if x != y: ..."` under non-interactive `bash -c`. Fixed by the `^0.0.70` runtime bump (upstream's custom single-quote-only `quote()`) plus a local `fixShellQuoteBangEscape()` guard at all three wrap sites in `index.ts` (see CHANGELOG 0.7.1). If a future runtime bump regresses quoting, the guard keeps commands safe and the test (`tests/fix-bang.test.mjs`) catches it. Known residual: the guard's double-quote-span detection is lexical — a literal `\!` inside single-quoted/heredoc content that resembles a quoted span may lose its backslash (rare; such commands were corrupted outright before this fix).
 - Note: `filesystem.allowGitConfig`, documented above for ≤0.7.0, no longer exists in runtime 0.0.70 — upstream removed both the config key and the mandatory `.git/config`/`.git/hooks` write denies. Git config writes are now governed by ordinary `denyWrite`/`allowWrite` rules.
+
+## Tool-call contract (pi-permissions)
+
+Before mutating `event.input.command` into the sandbox wrap, the extension stamps the
+user's original command under `Symbol.for("pi-claude-sandbox.original-command")`
+(non-enumerable). pi-permissions (sibling repo) prefers that stamp so its rules and
+safety floor always judge the user's command, never the wrap plumbing (whose inlined
+seatbelt profile embeds protected paths on every wrapped call). RTK and pi-mise also
+mutate bash commands but are stamp-unaware — benign today: neither introduces
+protected-path text.

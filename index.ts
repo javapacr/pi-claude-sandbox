@@ -475,6 +475,34 @@ function fixShellQuoteBangEscape(s: string): string {
 }
 
 /**
+ * Cross-extension contract (consumed by pi-permissions, sibling repo in this
+ * monorepo — same Symbol.for string, deliberately not an import): before the
+ * sandbox overwrites `event.input.command` with the wrap text, it stamps the
+ * user's ORIGINAL command under this key. The permission engine's
+ * canonicalizer prefers the stamp so rules + the safety floor always evaluate
+ * the user's command, never the wrap plumbing (whose inlined seatbelt profile
+ * embeds protected paths like /Users/reevonr/.ssh on EVERY wrapped call).
+ * Symbol.for (not Symbol) so the key resolves across jiti's per-extension
+ * module instances; stamped non-enumerable so session persistence/JSONL
+ * never records it.
+ */
+export const ORIGINAL_COMMAND_SYMBOL: symbol = Symbol.for("pi-claude-sandbox.original-command");
+
+/**
+ * Stamp `originalCommand` on `input` under ORIGINAL_COMMAND_SYMBOL.
+ * Stamp-then-mutate order is load-bearing: a concurrent reader of the input
+ * must never observe the mutated command without the stamp present.
+ */
+export function stampOriginalCommand(input: Record<string, unknown>, originalCommand: string): void {
+  Object.defineProperty(input, ORIGINAL_COMMAND_SYMBOL, {
+    value: originalCommand,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+}
+
+/**
  * Upstream #71 (technique port): on macOS, OpenSSH ignores ALL_PROXY, so ssh
  * (and git's exec'd ssh binary) bypass the sandbox's network proxy and die
  * with EPERM. When the runtime SOCKS proxy is running (network
@@ -957,6 +985,10 @@ export default function (pi: ExtensionAPI) {
         // on originalCommand — the preamble adds no network domains.
         const commandToWrap =
           (await buildSshProxyPreamble(config.network?.sshProxy !== false)) + originalCommand;
+        // Stamp BEFORE mutating (see ORIGINAL_COMMAND_SYMBOL): downstream
+        // permission engines race this handler and must never read the wrap
+        // text without the original stamped alongside it.
+        stampOriginalCommand(event.input, originalCommand);
         event.input.command = fixShellQuoteBangEscape(
           await SandboxManager.wrapWithSandbox(commandToWrap),
         );
