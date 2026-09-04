@@ -34,7 +34,7 @@
     "ci:check": "npm run check"
   },
   "dependencies": {
-    "@carderne/sandbox-runtime": "github:javapacr/sandbox-runtime#83eafcfdf3d7a3ba1352a78095588818ec956381"
+    "@carderne/sandbox-runtime": "github:javapacr/sandbox-runtime#8d74f7b9c6dd3fdb7fa4007ac5f343533b13f24d"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "*",
