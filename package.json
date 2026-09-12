@@ -39,7 +39,7 @@
     "ci:test": "pnpm test"
   },
   "dependencies": {
-    "@carderne/sandbox-runtime": "^0.0.72"
+    "@carderne/sandbox-runtime": "github:javapacr/sandbox-runtime#935c2ba81d42dce843e598c63cc8d1d7907a6279"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.0",
