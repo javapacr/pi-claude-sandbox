@@ -118,12 +118,10 @@ export function supportsNodeEnvProxy(version: string): boolean {
   return (major === 22 && minor >= 21) || major >= 24;
 }
 
-export function extractBlockedWritePath(output: string): string | null {
-  const match = output.match(
-    /(?:\/bin\/bash|bash|sh): (?:line \d: )?(\/[^\s:]+): Operation not permitted/,
-  );
-  return match ? match[1] : null;
-}
+// The richer blocked-write extraction (child-tool coverage, ~-paths) lives in
+// policy.ts — the extension consumes it from there; re-exported here so the
+// module's public surface keeps its historical shape.
+export { extractBlockedWritePath } from "./policy.ts";
 
 /**
  * Probe a TCP port for a SOCKS5 no-auth handshake: connect, send the greeting
