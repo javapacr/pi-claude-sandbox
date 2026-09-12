@@ -187,3 +187,17 @@ Based on code from
 [badlogic/pi-mono](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/examples/extensions/sandbox/index.ts)
 by Mario Zechner, used under the
 [MIT License](https://github.com/badlogic/pi-mono/blob/main/LICENSE).
+
+## Fork: javapacr/pi-claude-sandbox
+
+This repo is a fork reunified with [carderne/pi-sandbox](https://github.com/carderne/pi-sandbox), whose base is frozen at `31fa506` (= v0.6.8). On top of that clean base it carries a small divergence layer:
+
+- **Fork identity** — package name `pi-claude-sandbox`, v0.7.2, javapacr authorship and repo URLs.
+- **Runtime pin** — `@carderne/sandbox-runtime` resolved to the `javapacr/sandbox-runtime` fork at `935c2ba` (synced to upstream v0.0.72, with committed `dist/`).
+- **Keep-alive / timeouts / SOCKS-readiness** hardening.
+- **Retry-after-grant** plus a richer set of blocked-write regexes.
+- **`ORIGINAL_COMMAND_SYMBOL` stamp** of the original bash command on `event.input` before sandbox-wrapping.
+- **Tildified config paths** in UI display strings.
+- **Ported tests** from the legacy single-file lineage.
+
+Future upstream sync is a plain `git fetch upstream && git merge`; conflicts are expected only in the divergence lines listed above. The legacy single-file lineage is preserved at tag `legacy-single-file`.

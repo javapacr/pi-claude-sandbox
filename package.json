@@ -1,7 +1,7 @@
 {
-  "name": "pi-sandbox",
-  "version": "0.6.8",
-  "description": "OS-level sandboxing for pi with interactive permission prompts",
+  "name": "pi-claude-sandbox",
+  "version": "0.7.2",
+  "description": "Claude-style OS-level sandboxing for pi with interactive permission prompts. Coexists with pi-tool-display and other bash-overriding extensions. Forked from carderne/pi-sandbox, then forked by javapacr for profile-aware config handling and documentation fixes.",
   "keywords": [
     "pi-package",
     "pi-extension"
@@ -19,14 +19,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/carderne/pi-sandbox.git"
+    "url": "git+https://github.com/javapacr/pi-claude-sandbox.git"
   },
-  "author": "Chris Arderne <chris@rdrn.me>",
+  "author": "Son Dinh",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/carderne/pi-sandbox/issues"
+    "url": "https://github.com/javapacr/pi-claude-sandbox/issues"
   },
-  "homepage": "https://github.com/carderne/pi-sandbox",
+  "homepage": "https://github.com/javapacr/pi-claude-sandbox",
   "scripts": {
     "fmt": "oxfmt index.ts src test",
     "lint": "oxlint index.ts src test",
