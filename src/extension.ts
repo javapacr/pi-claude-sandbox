@@ -2,6 +2,7 @@ import { createSandboxManager } from "@carderne/sandbox-runtime";
 import { type AgentToolResult, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   createBashToolDefinition,
+  isBashToolResult,
   isToolCallEventType,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -17,18 +18,24 @@ import {
 import {
   canonicalizePath,
   domainIsAllowed,
+  extractBlockedWritePath,
   extractDomainsFromCommand,
   matchesPattern,
   resolveWritePermission,
 } from "./policy.ts";
 import {
+  armKeepAlive,
   createSandboxedBashOps,
-  extractBlockedWritePath,
   initializeSandbox,
+  releaseKeepAlive,
+  releaseKeepAliveWithGrace,
+  retryBashCommand,
+  stampOriginalCommand,
   updateSandboxConfig,
   resolveAllowances,
   type SessionAllowances,
   supportsNodeEnvProxy,
+  withTimeout,
 } from "./sandbox-runtime.ts";
 import {
   formatSandboxConfiguration,
@@ -57,6 +64,12 @@ export default function (pi: ExtensionAPI) {
   let sandboxEnabled = false;
   let sandboxInitialized = false;
   const allowances: SessionAllowances = { domains: [], readPaths: [], writePaths: [] };
+  // Stashed in the bash tool_call handler before any wrap mutation, so the
+  // bash write-block auto-retry can re-execute the user's original command
+  // exactly once per tool call with the newly granted policy.
+  const originalCommandsByToolCallId = new Map<string, string>();
+  const autoRetriedToolCallIds = new Set<string>();
+  let turnEndKeepAliveRegistered = false;
 
   const effectiveAllowances = (cwd: string) => resolveAllowances(loadConfig(cwd), allowances);
   const effectiveDomains = (cwd: string) => effectiveAllowances(cwd).domains;
@@ -118,12 +131,17 @@ export default function (pi: ExtensionAPI) {
     }
 
     try {
-      await initializeSandbox(sandboxManager, config, allowances);
+      await withTimeout(
+        initializeSandbox(sandboxManager, config, allowances),
+        10_000,
+        "Sandbox initialize",
+      );
       if (setProxyEnvironment && supportsNodeEnvProxy(process.versions.node)) {
         process.env.NODE_USE_ENV_PROXY ??= "1";
       }
       sandboxEnabled = true;
       sandboxInitialized = true;
+      armKeepAlive(); // I-1: keep the host event loop warm so the manager stays valid
       warnIfAllDomainsAllowed(ctx, config);
       updateStatus(ctx, config);
       return true;
@@ -146,8 +164,9 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (sandboxInitialized) {
+      releaseKeepAlive(); // I-1: hard release on disable
       try {
-        await sandboxManager.reset();
+        await withTimeout(sandboxManager.reset(), 10_000, "Sandbox reset").catch(() => {});
       } catch {
         // Ignore cleanup errors.
       }
@@ -212,6 +231,27 @@ export default function (pi: ExtensionAPI) {
         if (blockedPath) {
           const path = canonicalizePath(blockedPath);
           const config = loadConfig(ctx.cwd);
+          const { projectPath, globalPath } = getConfigPaths(ctx.cwd);
+
+          // denyWrite always wins over allowWrite: granting allowWrite would
+          // be misleading because the OS sandbox would still block the write.
+          // Surface the conflict before prompting so the user (and LLM) can
+          // edit denyWrite by hand or skip the operation.
+          if (matchesPattern(path, config.filesystem?.denyWrite ?? [])) {
+            ctx.ui.notify(
+              `⚠️ "${path}" matches a denyWrite rule. denyWrite always wins over allowWrite — grant cannot help here. Edit denyWrite manually if needed.`,
+              "warning",
+            );
+            let hint = `\n\n[Sandbox] Cannot grant write to "${path}": it matches a denyWrite rule (denyWrite always wins over allowWrite).\n`;
+            hint += `To allow this path, manually remove the matching pattern from denyWrite in:\n  ${tildify(projectPath)}\n  ${tildify(globalPath)}\n`;
+            hint += `Otherwise, choose a different path or skip this operation.`;
+            return {
+              content: [{ type: "text" as const, text: output + hint }],
+              details: {},
+              isError: true,
+            };
+          }
+
           const writePermission = await resolveWritePermission({
             path,
             allowWrite: effectiveWritePaths(ctx.cwd),
@@ -228,6 +268,44 @@ export default function (pi: ExtensionAPI) {
             return runBash();
           }
           if (writePermission.action === "granted") {
+            // Auto-retry the original command once with the new policy. If it
+            // still blocks or throws, fall through to the upstream fallback so
+            // the LLM can grant the next path.
+            const originalCommand = originalCommandsByToolCallId.get(id);
+            const alreadyRetried = autoRetriedToolCallIds.has(id);
+            if (originalCommand && !alreadyRetried) {
+              autoRetriedToolCallIds.add(id);
+              try {
+                const ctxSignal = (ctx as { signal?: AbortSignal }).signal;
+                const retry = await retryBashCommand(
+                  sandboxManager,
+                  originalCommand,
+                  ctx.cwd,
+                  ctxSignal,
+                );
+                const stillBlocked = extractBlockedWritePath(retry.output) !== null;
+                if (!stillBlocked) {
+                  ctx.ui.notify(
+                    `✓ Auto-retried "${path}" after grant (exit ${retry.exitCode ?? "?"})`,
+                    "info",
+                  );
+                  return {
+                    content: [{ type: "text" as const, text: retry.output }],
+                    details: {},
+                    isError: retry.exitCode !== 0,
+                  } as AgentToolResult<any>;
+                }
+              } catch (error) {
+                ctx.ui.notify(
+                  `Auto-retry failed: ${error instanceof Error ? error.message : error}. Falling back to LLM retry.`,
+                  "warning",
+                );
+              } finally {
+                originalCommandsByToolCallId.delete(id);
+              }
+            }
+            // Upstream fallback: re-run via the agent bash tool so the LLM can
+            // grant the next blocked path.
             onUpdate?.({
               content: [
                 {
@@ -287,6 +365,15 @@ export default function (pi: ExtensionAPI) {
     const { projectPath, globalPath } = getConfigPaths(ctx.cwd);
 
     if (sandboxInitialized && isToolCallEventType("bash", event)) {
+      // D7 stamp + stash: before any wrap mutation, record the user's original
+      // command. The downstream pi-permissions canonicalizer (dormant, contract
+      // retained) prefers the stamp so rules evaluate the user's command, never
+      // the wrap plumbing whose inlined seatbelt profile embeds protected paths.
+      const originalCommand = event.input.command;
+      stampOriginalCommand(event.input, originalCommand);
+      originalCommandsByToolCallId.set(event.toolCallId, originalCommand);
+      armKeepAlive(); // I-1: re-arm on user bash activity
+
       for (const domain of extractDomainsFromCommand(event.input.command)) {
         if (!domainIsAllowed(domain, effectiveDomains(ctx.cwd))) {
           const choice = await promptDomainBlock(
@@ -347,6 +434,19 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  pi.on("tool_result", async (event) => {
+    if (!sandboxEnabled || !sandboxInitialized) return;
+    if (!isBashToolResult(event)) return;
+    const output = event.content
+      .filter((c): c is { type: "text"; text: string } => c.type === "text")
+      .map((c) => c.text)
+      .join("\n");
+    // No block detected — release the stash so we don't leak memory.
+    if (extractBlockedWritePath(output) === null) {
+      originalCommandsByToolCallId.delete(event.toolCallId);
+    }
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     if (pi.getFlag("no-sandbox") as boolean) {
       sandboxEnabled = false;
@@ -361,10 +461,20 @@ export default function (pi: ExtensionAPI) {
     await enableSandbox(ctx, true);
   });
 
+  // I-1: graceful release between turns so concurrent host activity isn't
+  // cut short, hard release at shutdown. Guard against double-registration.
+  if (!turnEndKeepAliveRegistered) {
+    turnEndKeepAliveRegistered = true;
+    pi.on("turn_end", async () => {
+      releaseKeepAliveWithGrace();
+    });
+  }
+
   pi.on("session_shutdown", async () => {
+    releaseKeepAlive(); // I-1: hard release at shutdown
     if (!sandboxInitialized) return;
     try {
-      await sandboxManager.reset();
+      await withTimeout(sandboxManager.reset(), 10_000, "Sandbox reset").catch(() => {});
     } catch {
       // Ignore cleanup errors.
     }

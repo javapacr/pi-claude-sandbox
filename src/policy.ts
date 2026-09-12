@@ -84,6 +84,22 @@ export function canonicalizePath(filePath: string): string {
   }
 }
 
+/**
+ * Extract a path from a bash/sh "Operation not permitted" OS sandbox error,
+ * including child tools (cat, cp, mv, touch, tee, npm, yarn, pip, cargo,
+ * gradle, maven, curl, wget, git, make, cmake) and an optional `line N:`
+ * prefix. Returns the path exactly as written in the redirect (absolute,
+ * relative, or ~-prefixed) so callers can canonicalize it against their cwd.
+ * Null when no block is detected.
+ */
+export function extractBlockedWritePath(output: string): string | null {
+  const match = output.match(
+    /(?:bash|sh|cat|cp|mv|touch|tee|npm|yarn|pip|cargo|gradle|maven|curl|wget|git|make|cmake):(?:\s+line\s+\d+:)?\s+([^\s:][^:]*?): Operation not permitted/i,
+  );
+  if (!match) return null;
+  return match[1].replace(/^["'`]|["'`]$/g, "").trim() || null;
+}
+
 export function matchesPattern(filePath: string, patterns: string[]): boolean {
   const absolutePath = canonicalizePath(filePath);
   return patterns.some((pattern) => {
