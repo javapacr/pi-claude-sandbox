@@ -16,6 +16,12 @@ import {
   loadConfig,
 } from "./config.ts";
 import {
+  handleBlockedWrite,
+  wireHookMode,
+  type MutateStep,
+  type WriteGrantContext,
+} from "./hook-mode.ts";
+import {
   canonicalizePath,
   domainIsAllowed,
   extractBlockedWritePath,
@@ -29,7 +35,6 @@ import {
   initializeSandbox,
   releaseKeepAlive,
   releaseKeepAliveWithGrace,
-  retryBashCommand,
   stampOriginalCommand,
   updateSandboxConfig,
   resolveAllowances,
@@ -61,6 +66,11 @@ export default function (pi: ExtensionAPI) {
   const userShellPath = SettingsManager.create(localCwd).getShellPath();
   const localBash = createBashToolDefinition(localCwd, { shellPath: userShellPath });
 
+  // D10 hook mode: when another extension registers a bash tool (e.g.
+  // pi-patty-bg-tasks), skip registering ours (two bash registrants make pi
+  // exit at load) and instead wrap the shared bash command in place.
+  const hookMode = loadConfig(localCwd).compat?.registerBashTool === false;
+
   let sandboxEnabled = false;
   let sandboxInitialized = false;
   const allowances: SessionAllowances = { domains: [], readPaths: [], writePaths: [] };
@@ -70,6 +80,11 @@ export default function (pi: ExtensionAPI) {
   const originalCommandsByToolCallId = new Map<string, string>();
   const autoRetriedToolCallIds = new Set<string>();
   let turnEndKeepAliveRegistered = false;
+  // Set when hook mode is active (config.compat.registerBashTool === false).
+  // The main bash tool_call handler calls this at the END of its bash branch,
+  // giving a single-handler guarantee that stamping runs before the wrap
+  // mutation (see wireHookMode in hook-mode.ts).
+  let mutateStep: MutateStep | undefined;
 
   const effectiveAllowances = (cwd: string) => resolveAllowances(loadConfig(cwd), allowances);
   const effectiveDomains = (cwd: string) => effectiveAllowances(cwd).domains;
@@ -185,143 +200,99 @@ export default function (pi: ExtensionAPI) {
     if (await enableSandbox(ctx, false)) ctx.ui.notify("Sandbox enabled", "info");
   }
 
-  pi.registerTool({
-    ...localBash,
-    label: "bash (sandboxed)",
-    async execute(id, params, signal, onUpdate, ctx) {
-      const runBash = () => {
-        if (!sandboxEnabled || !sandboxInitialized) {
-          return localBash.execute(id, params, signal, onUpdate, ctx);
-        }
-        return createBashToolDefinition(localCwd, {
-          operations: createSandboxedBashOps(
-            sandboxManager,
-            userShellPath,
-            loadConfig(ctx.cwd).network?.sshProxy !== false,
-          ),
-          shellPath: userShellPath,
-        }).execute(id, params, signal, onUpdate, ctx);
-      };
+  const grantContext: WriteGrantContext = {
+    pi,
+    manager: sandboxManager,
+    loadConfig,
+    getConfigPaths,
+    effectiveWritePaths,
+    applyWriteChoice: (choice, value, cwd) => applyChoice(choice, "write", value, cwd),
+    refreshSandbox,
+    originalCommands: originalCommandsByToolCallId,
+    autoRetried: autoRetriedToolCallIds,
+  };
 
-      let result: AgentToolResult<any>;
-      try {
-        result = await runBash();
-      } catch (error) {
-        if (!(error instanceof Error) || !error.message.includes("Operation not permitted")) {
-          throw error;
-        }
-        result = {
-          content: [
-            {
-              type: "text",
-              text: `Error: Command failed with OS-level sandbox restriction: ${error.message}`,
-            },
-          ],
-          details: {},
-        };
-      }
-
-      if (sandboxEnabled && sandboxInitialized && ctx?.hasUI) {
-        const output = result.content
-          .filter((content: any) => content.type === "text")
-          .map((content: any) => content.text)
-          .join("\n");
-        const blockedPath = extractBlockedWritePath(output);
-
-        if (blockedPath) {
-          const path = canonicalizePath(blockedPath);
-          const config = loadConfig(ctx.cwd);
-          const { projectPath, globalPath } = getConfigPaths(ctx.cwd);
-
-          // denyWrite always wins over allowWrite: granting allowWrite would
-          // be misleading because the OS sandbox would still block the write.
-          // Surface the conflict before prompting so the user (and LLM) can
-          // edit denyWrite by hand or skip the operation.
-          if (matchesPattern(path, config.filesystem?.denyWrite ?? [])) {
-            ctx.ui.notify(
-              `⚠️ "${path}" matches a denyWrite rule. denyWrite always wins over allowWrite — grant cannot help here. Edit denyWrite manually if needed.`,
-              "warning",
-            );
-            let hint = `\n\n[Sandbox] Cannot grant write to "${path}": it matches a denyWrite rule (denyWrite always wins over allowWrite).\n`;
-            hint += `To allow this path, manually remove the matching pattern from denyWrite in:\n  ${tildify(projectPath)}\n  ${tildify(globalPath)}\n`;
-            hint += `Otherwise, choose a different path or skip this operation.`;
-            return {
-              content: [{ type: "text" as const, text: output + hint }],
-              details: {},
-              isError: true,
-            };
+  if (hookMode) {
+    const wired = wireHookMode(pi, {
+      manager: sandboxManager,
+      getConfig: loadConfig,
+      isEnabled: () => sandboxEnabled && sandboxInitialized,
+      grant: grantContext,
+    });
+    mutateStep = wired.mutateStep;
+  } else {
+    pi.registerTool({
+      ...localBash,
+      label: "bash (sandboxed)",
+      async execute(id, params, signal, onUpdate, ctx) {
+        const runBash = () => {
+          if (!sandboxEnabled || !sandboxInitialized) {
+            return localBash.execute(id, params, signal, onUpdate, ctx);
           }
+          return createBashToolDefinition(localCwd, {
+            operations: createSandboxedBashOps(
+              sandboxManager,
+              userShellPath,
+              loadConfig(ctx.cwd).network?.sshProxy !== false,
+            ),
+            shellPath: userShellPath,
+          }).execute(id, params, signal, onUpdate, ctx);
+        };
 
-          const writePermission = await resolveWritePermission({
-            path,
-            allowWrite: effectiveWritePaths(ctx.cwd),
-            denyWrite: config.filesystem?.denyWrite ?? [],
-            prompt: (path) =>
-              promptWriteBlock(pi, ctx, path, config.permissionPromptTimeoutSeconds),
-            saveWritePermission: (choice, value) => applyChoice(choice, "write", value, ctx.cwd),
-          });
-          if (writePermission.action === "deny") {
+        let result: AgentToolResult<any>;
+        try {
+          result = await runBash();
+        } catch (error) {
+          if (!(error instanceof Error) || !error.message.includes("Operation not permitted")) {
+            throw error;
+          }
+          result = {
+            content: [
+              {
+                type: "text",
+                text: `Error: Command failed with OS-level sandbox restriction: ${error.message}`,
+              },
+            ],
+            details: {},
+          };
+        }
+
+        if (sandboxEnabled && sandboxInitialized && ctx?.hasUI) {
+          const output = result.content
+            .filter((content: any) => content.type === "text")
+            .map((content: any) => content.text)
+            .join("\n");
+          // Shared grant flow (also used by hook mode) — detect the blocked path,
+          // pre-check denyWrite, prompt, apply the grant, and auto-retry once.
+          const outcome = await handleBlockedWrite(grantContext, ctx, output, id);
+
+          if (outcome.kind === "pass-through") {
             return result;
           }
-          if (writePermission.action === "allow") {
-            await refreshSandbox(ctx.cwd);
+          if (outcome.kind === "result") {
+            return outcome.result;
+          }
+          if (outcome.kind === "allow") {
             return runBash();
           }
-          if (writePermission.action === "granted") {
-            // Auto-retry the original command once with the new policy. If it
-            // still blocks or throws, fall through to the upstream fallback so
-            // the LLM can grant the next path.
-            const originalCommand = originalCommandsByToolCallId.get(id);
-            const alreadyRetried = autoRetriedToolCallIds.has(id);
-            if (originalCommand && !alreadyRetried) {
-              autoRetriedToolCallIds.add(id);
-              try {
-                const ctxSignal = (ctx as { signal?: AbortSignal }).signal;
-                const retry = await retryBashCommand(
-                  sandboxManager,
-                  originalCommand,
-                  ctx.cwd,
-                  ctxSignal,
-                );
-                const stillBlocked = extractBlockedWritePath(retry.output) !== null;
-                if (!stillBlocked) {
-                  ctx.ui.notify(
-                    `✓ Auto-retried "${path}" after grant (exit ${retry.exitCode ?? "?"})`,
-                    "info",
-                  );
-                  return {
-                    content: [{ type: "text" as const, text: retry.output }],
-                    details: {},
-                    isError: retry.exitCode !== 0,
-                  } as AgentToolResult<any>;
-                }
-              } catch (error) {
-                ctx.ui.notify(
-                  `Auto-retry failed: ${error instanceof Error ? error.message : error}. Falling back to LLM retry.`,
-                  "warning",
-                );
-              } finally {
-                originalCommandsByToolCallId.delete(id);
-              }
-            }
-            // Upstream fallback: re-run via the agent bash tool so the LLM can
-            // grant the next blocked path.
-            onUpdate?.({
-              content: [
-                {
-                  type: "text",
-                  text: `\n--- Write access granted for "${writePermission.value}", retrying ---\n`,
-                },
-              ],
-              details: {},
-            });
-            return runBash();
-          }
+          // granted-fallback: grant took effect but the auto-retry still hit a
+          // block. Re-run via the agent bash tool so the LLM can grant the next
+          // blocked path.
+          onUpdate?.({
+            content: [
+              {
+                type: "text",
+                text: `\n--- Write access granted for "${outcome.blockedPath}", retrying ---\n`,
+              },
+            ],
+            details: {},
+          });
+          return runBash();
         }
-      }
-      return result;
-    },
-  });
+        return result;
+      },
+    });
+  }
 
   pi.on("user_bash", async (event, ctx) => {
     if (!sandboxEnabled || !sandboxInitialized) return;
@@ -391,6 +362,11 @@ export default function (pi: ExtensionAPI) {
           await applyChoice(choice.action, "domain", choice.value, ctx.cwd);
         }
       }
+
+      // D10 hook mode: if active, wrap the command AFTER the stamp/stash/domain
+      // checks so stamping stays first within this one handler (single-handler
+      // design — see wireHookMode). No-op in upstream (registered-tool) mode.
+      await mutateStep?.(event, ctx);
     }
 
     if (isToolCallEventType("read", event)) {

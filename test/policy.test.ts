@@ -10,6 +10,7 @@ import {
   canonicalizePath,
   decideWritePolicy,
   domainIsAllowed,
+  extractBlockedWritePath,
   extractDomainsFromCommand,
   matchesPattern,
   resolveWritePermission,
@@ -117,4 +118,44 @@ test("canonicalizes symlinks and nonexistent descendants", () => {
     canonicalizePath(join(link, "new", "file")),
     join(canonicalizePath(real), "new", "file"),
   );
+});
+
+test("extractBlockedWritePath: child-tool prefix", () => {
+  assert.equal(extractBlockedWritePath("cat: /x: Operation not permitted"), "/x");
+  assert.equal(extractBlockedWritePath("npm: /root/.npm: Operation not permitted"), "/root/.npm");
+});
+
+test("extractBlockedWritePath: line-number prefix", () => {
+  assert.equal(
+    extractBlockedWritePath("bash: line 12: /foo/bar: Operation not permitted"),
+    "/foo/bar",
+  );
+  assert.equal(
+    extractBlockedWritePath("sh: line 3: ~/out.txt: Operation not permitted"),
+    "~/out.txt",
+  );
+});
+
+test("extractBlockedWritePath: ~-prefixed path", () => {
+  assert.equal(
+    extractBlockedWritePath("touch: ~/secret.txt: Operation not permitted"),
+    "~/secret.txt",
+  );
+});
+
+test("extractBlockedWritePath: relative path", () => {
+  assert.equal(
+    extractBlockedWritePath("mv: ./nested/file: Operation not permitted"),
+    "./nested/file",
+  );
+});
+
+test("extractBlockedWritePath: quoted path stripping", () => {
+  assert.equal(extractBlockedWritePath('tee: "/tmp/a b c": Operation not permitted'), "/tmp/a b c");
+});
+
+test("extractBlockedWritePath: no match returns null", () => {
+  assert.equal(extractBlockedWritePath("hi there"), null);
+  assert.equal(extractBlockedWritePath("EACCES: permission denied"), null);
+  assert.equal(extractBlockedWritePath(""), null);
 });

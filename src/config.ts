@@ -4,10 +4,23 @@ import { dirname, join } from "node:path";
 import { type SandboxRuntimeConfig } from "@carderne/sandbox-runtime";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
+/**
+ * Compatibility switches for coexisting with other bash-tool-registering
+ * extensions (e.g. pi-patty-bg-tasks). Without hook mode, two bash tool
+ * registrants make pi exit at load; setting `registerBashTool: false` skips
+ * registering the sandboxed bash tool and instead wraps the shared command in
+ * place so whatever bash tool is registered runs it sandboxed.
+ */
+export interface CompatOptions {
+  /** Register the sandboxed bash tool (default true/undefined = register). */
+  registerBashTool?: boolean;
+}
+
 export type SandboxConfig = Omit<SandboxRuntimeConfig, "network"> & {
   enabled?: boolean;
   sandboxUserShell?: boolean;
   permissionPromptTimeoutSeconds?: number;
+  compat?: CompatOptions;
   network?: NonNullable<SandboxRuntimeConfig["network"]> & {
     allowUnauthenticatedSocksProxy?: boolean;
     /** Route ordinary `ssh` commands through the sandbox SOCKS proxy. */
