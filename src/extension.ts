@@ -38,6 +38,7 @@ import {
   promptReadBlock,
   showPermissionPrompt,
   promptWriteBlock,
+  tildify,
   warnIfAllDomainsAllowed,
 } from "./ui.ts";
 
@@ -331,7 +332,7 @@ export default function (pi: ExtensionAPI) {
           block: true,
           reason:
             `Sandbox: write access denied for "${path}" (in denyWrite). ` +
-            `To change this, edit denyWrite in:\n  ${projectPath}\n  ${globalPath}`,
+            `To change this, edit denyWrite in:\n  ${tildify(projectPath)}\n  ${tildify(globalPath)}`,
         };
       }
       if (writePermission.action === "abort") {

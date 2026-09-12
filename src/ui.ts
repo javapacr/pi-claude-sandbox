@@ -1,5 +1,6 @@
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { homedir } from "node:os";
 
 import {
   DEFAULT_PERMISSION_PROMPT_TIMEOUT_SECONDS,
@@ -43,6 +44,15 @@ export function permissionPromptRemainingSeconds(deadlineMs: number, nowMs = Dat
   return Math.max(0, Math.ceil((deadlineMs - nowMs) / 1000));
 }
 
+/**
+ * Tildify a path for display only (replace the leading homedir with ~).
+ * Never use this for path resolution or config loading — display strings only.
+ */
+export function tildify(path: string): string {
+  const home = homedir();
+  return path.startsWith(home) ? "~" + path.slice(home.length) : path;
+}
+
 export function permissionOptions(cwd: string): PromptOption[] {
   const { globalPath, projectPath } = getConfigPaths(cwd);
   return [
@@ -53,14 +63,14 @@ export function permissionOptions(cwd: string): PromptOption[] {
       key: "P",
       action: "project",
       confirm: true,
-      hint: `→ ${projectPath}`,
+      hint: `→ ${tildify(projectPath)}`,
     },
     {
       label: "Allow for all projects",
       key: "A",
       action: "global",
       confirm: true,
-      hint: `→ ${globalPath}`,
+      hint: `→ ${tildify(globalPath)}`,
     },
   ];
 }
@@ -369,8 +379,8 @@ export function formatSandboxConfiguration(
 ): string {
   return [
     "Sandbox Configuration",
-    `  Project config: ${paths.projectPath}`,
-    `  Global config:  ${paths.globalPath}`,
+    `  Project config: ${tildify(paths.projectPath)}`,
+    `  Global config:  ${tildify(paths.globalPath)}`,
     "",
     "Network (bash + !cmd):",
     `  Allowed domains: ${config.network?.allowedDomains?.join(", ") || "(none)"}`,
