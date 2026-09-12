@@ -108,7 +108,10 @@ Additional gates and gotchas:
 |---|---|---|
 | `upstream` | carderne/pi-sandbox | sync target (fetch + merge) |
 | `origin` | javapacr/pi-claude-sandbox | push target |
-| `upstream-dinh` | tuansondinh/pi-claude-sandbox | historical graft ancestor only — never a sync target |
+
+(The stale `upstream-dinh` remote — tuansondinh/pi-claude-sandbox, historical
+doubly-grafted ancestor — was removed 2026-09-12; its history remains reachable
+via the `legacy-single-file` and `pre-unify-main` tags.)
 
 Legacy tags (history preserved when `unified` replaced `main`; do not delete):
 
