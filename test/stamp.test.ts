@@ -1,3 +1,5 @@
+import { test } from "node:test";
+
 /**
  * Cross-extension contract with pi-permissions (sibling repo): before the
  * sandbox overwrites `event.input.command` with the wrap text, it stamps the
@@ -12,12 +14,8 @@
  * "references protected path ~/.ssh" (see pi-permissions/tests/sandbox-stamp.test.ts).
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 
-import {
-  ORIGINAL_COMMAND_SYMBOL,
-  stampOriginalCommand,
-} from "../src/sandbox-runtime.ts";
+import { ORIGINAL_COMMAND_SYMBOL, stampOriginalCommand } from "../src/sandbox-runtime.ts";
 
 test("stampOriginalCommand: stamps the original, non-enumerable, before mutation", () => {
   const input: Record<string, unknown> = { command: "echo probe-ok" };

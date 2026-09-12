@@ -208,7 +208,10 @@ export const ORIGINAL_COMMAND_SYMBOL: symbol = Symbol.for("pi-claude-sandbox.ori
  * Stamp-then-mutate order is load-bearing: a concurrent reader of the input
  * must never observe the mutated command without the stamp present.
  */
-export function stampOriginalCommand(input: Record<string, unknown>, originalCommand: string): void {
+export function stampOriginalCommand(
+  input: Record<string, unknown>,
+  originalCommand: string,
+): void {
   Object.defineProperty(input, ORIGINAL_COMMAND_SYMBOL, {
     value: originalCommand,
     enumerable: false,

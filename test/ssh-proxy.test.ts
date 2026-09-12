@@ -1,3 +1,9 @@
+import type { ISandboxManager } from "@carderne/sandbox-runtime";
+
+import { readFileSync } from "node:fs";
+import net from "node:net";
+import { test } from "node:test";
+
 /**
  * Tests for buildSshProxyPreamble (upstream carderne #71 technique port) and
  * isSocksProxyReady.
@@ -11,12 +17,8 @@
  * isSocksProxyReady against real net servers.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import net from "node:net";
-import { test } from "node:test";
 
 import { buildSshProxyPreamble, isSocksProxyReady } from "../src/sandbox-runtime.ts";
-import type { ISandboxManager } from "@carderne/sandbox-runtime";
 
 // ── stubs ────────────────────────────────────────────────────────────────────
 
@@ -44,16 +46,12 @@ const EXPECTED = (port: number) =>
 // ── builder guard paths (no probe — these return "" before isSocksProxyReady) ──
 
 test('returns "" when sshProxy disabled', async () => {
-  const out = await withPlatform("darwin", () =>
-    buildSshProxyPreamble(fakeManager(52832), false),
-  );
+  const out = await withPlatform("darwin", () => buildSshProxyPreamble(fakeManager(52832), false));
   assert.equal(out, "");
 });
 
 test('returns "" on non-darwin (linux) even when enabled + port available', async () => {
-  const out = await withPlatform("linux", () =>
-    buildSshProxyPreamble(fakeManager(52832), true),
-  );
+  const out = await withPlatform("linux", () => buildSshProxyPreamble(fakeManager(52832), true));
   assert.equal(out, "");
 });
 

@@ -1,6 +1,7 @@
+import { homedir } from "node:os";
+
 import { type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { homedir } from "node:os";
 
 import {
   DEFAULT_PERMISSION_PROMPT_TIMEOUT_SECONDS,

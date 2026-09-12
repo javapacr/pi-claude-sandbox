@@ -1,3 +1,5 @@
+import { test } from "node:test";
+
 /**
  * Regression test for the shell-quote bang-escape fix.
  *
@@ -11,13 +13,12 @@
  * - Handle escaped-quote sequences correctly
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 
 import { fixShellQuoteBangEscape } from "../src/sandbox-runtime.ts";
 
 test("un-escapes \\! inside double quotes", () => {
-  const input = 'bash -c "echo \'x \\!= y\'"';
-  assert.equal(fixShellQuoteBangEscape(input), 'bash -c "echo \'x != y\'"');
+  const input = "bash -c \"echo 'x \\!= y'\"";
+  assert.equal(fixShellQuoteBangEscape(input), "bash -c \"echo 'x != y'\"");
 });
 
 test("un-escapes multiple \\! inside double quotes", () => {

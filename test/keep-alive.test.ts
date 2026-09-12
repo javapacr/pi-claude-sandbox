@@ -1,3 +1,5 @@
+import { test } from "node:test";
+
 /**
  * Tests for the I-1 turn-aware keep-alive helpers (armKeepAlive /
  * releaseKeepAlive / releaseKeepAliveWithGrace / isKeepAliveActive).
@@ -6,7 +8,6 @@
  * file is safe to run standalone. Total runtime < 2s.
  */
 import assert from "node:assert/strict";
-import { test } from "node:test";
 
 import {
   armKeepAlive,

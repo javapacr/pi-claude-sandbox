@@ -1,3 +1,5 @@
+import type { ISandboxManager } from "@carderne/sandbox-runtime";
+
 /**
  * Tests for retryBashCommand — the sandbox-wrapped single-shot runner used by
  * the auto-retry/permission flow. Uses a fake manager whose wrapWithSandbox
@@ -8,9 +10,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
-import assert from "node:assert/strict";
 
-import type { ISandboxManager } from "@carderne/sandbox-runtime";
+import assert from "node:assert/strict";
 
 import { retryBashCommand } from "../src/sandbox-runtime.ts";
 
@@ -86,7 +87,10 @@ test("retryBashCommand resolves with output + exitCode even if a daemonized gran
 
   assert.equal(result.exitCode, 3);
   assert.ok(result.output.includes("output"), `missing expected output, got: ${result.output}`);
-  assert.ok(elapsed < 2000, `retryBashCommand returned after ${elapsed}ms; expected early teardown`);
+  assert.ok(
+    elapsed < 2000,
+    `retryBashCommand returned after ${elapsed}ms; expected early teardown`,
+  );
 });
 
 test("retryBashCommand rejects when the cwd does not exist", async (t) => {
