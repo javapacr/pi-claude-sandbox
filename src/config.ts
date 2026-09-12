@@ -77,6 +77,9 @@ function mergeObjects(base: SandboxConfig, overrides: SandboxConfigFile): Sandbo
     filesystem: overrides.filesystem
       ? ({ ...base.filesystem, ...overrides.filesystem } as FilesystemConfig)
       : base.filesystem,
+    compat: overrides.compat
+      ? ({ ...base.compat, ...overrides.compat } as NonNullable<SandboxConfig["compat"]>)
+      : base.compat,
   };
 }
 

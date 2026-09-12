@@ -102,6 +102,7 @@ export async function handleBlockedWrite(
     let hint = `\n\n[Sandbox] Cannot grant write to "${path}": it matches a denyWrite rule (denyWrite always wins over allowWrite).\n`;
     hint += `To allow this path, manually remove the matching pattern from denyWrite in:\n  ${tildify(projectPath)}\n  ${tildify(globalPath)}\n`;
     hint += `Otherwise, choose a different path or skip this operation.`;
+    g.originalCommands.delete(toolCallId);
     return {
       kind: "result",
       result: {
@@ -121,9 +122,11 @@ export async function handleBlockedWrite(
     saveWritePermission: (choice, value) => g.applyWriteChoice(choice, value, cwd),
   });
   if (writePermission.action === "deny") {
+    g.originalCommands.delete(toolCallId);
     return { kind: "pass-through" };
   }
   if (writePermission.action === "allow") {
+    g.originalCommands.delete(toolCallId);
     await g.refreshSandbox(cwd);
     return { kind: "allow", blockedPath: path };
   }
