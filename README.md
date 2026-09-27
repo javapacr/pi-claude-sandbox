@@ -190,9 +190,9 @@ by Mario Zechner, used under the
 
 ## Fork: javapacr/pi-claude-sandbox
 
-This repo is a fork reunified with [carderne/pi-sandbox](https://github.com/carderne/pi-sandbox), whose base is frozen at `31fa506` (= v0.6.8). On top of that clean base it carries a small divergence layer:
+This repo is a fork reunified with [carderne/pi-sandbox](https://github.com/carderne/pi-sandbox), whose base is frozen at `c3b2f73` (upstream `main` after #88; latest upstream tag v0.6.8). On top of that clean base it carries a small divergence layer:
 
-- **Fork identity** — package name `pi-claude-sandbox`, v0.7.2, javapacr authorship and repo URLs.
+- **Fork identity** — package name `pi-claude-sandbox`, v0.7.3, javapacr authorship and repo URLs.
 - **Runtime pin** — `@carderne/sandbox-runtime` resolved to the `javapacr/sandbox-runtime` fork at `935c2ba` (synced to upstream v0.0.72, with committed `dist/`).
 - **Keep-alive / timeouts / SOCKS-readiness** hardening.
 - **Retry-after-grant** plus a richer set of blocked-write regexes.
@@ -200,4 +200,4 @@ This repo is a fork reunified with [carderne/pi-sandbox](https://github.com/card
 - **Tildified config paths** in UI display strings.
 - **Ported tests** from the legacy single-file lineage.
 
-Future upstream sync is a plain `git fetch upstream && git merge`; conflicts are expected only in the divergence lines listed above. The legacy single-file lineage is preserved at tag `legacy-single-file`.
+Future upstream sync is a plain `git fetch upstream && git merge`; conflicts are expected only in the divergence lines listed above. The legacy single-file lineage is preserved at tag `legacy-single-file`. The authoritative divergence inventory and sync protocol are in [`docs/upstream-sync.md`](docs/upstream-sync.md); each sync's record (what upstream brought, what the fork added, what is pending) is in [`docs/sync-log/`](docs/sync-log/).
