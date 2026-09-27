@@ -65,6 +65,14 @@ Re-freezing (advancing the base):
 3. Re-run the full gate checklist below
 4. All green → the merge commit becomes the new freeze point; update the
    freeze SHA mentioned above to the new `upstream/main` tip it merged.
+5. Write the sync record: `docs/sync-log/<date>-<upstream-sha>.md` — what
+   upstream brought, how the merge touched the divergence layer, what the
+   fork added, pending items (durable ones go to `docs/backlog/`).
+
+Sync log (newest first):
+
+- [2026-09-27 → `c3b2f73`](sync-log/2026-09-27-c3b2f73.md) — #88
+  shellCommandPrefix; v0.7.3
 
 ## Gate checklist (every sync)
 
