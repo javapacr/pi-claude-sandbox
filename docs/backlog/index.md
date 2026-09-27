@@ -10,6 +10,7 @@ Carried to the unified lineage 2026-09-12 (reunification with carderne/pi-sandbo
 | [item2](item2.md) | Sentinel + proxy credential masking (TLS-terminating MITM) | parked (needs concrete driver) | L–XL |
 | [item3](item3.md) | Env-scrub coverage gap: hooks + MCP server spawns (pi-core) | upstream-candidate (file against carderne/pi-sandbox) | S (to file) |
 | [item4](item4.md) | Hook-mode shellCommandPrefix runs outside the sandbox wrapper | recorded — fix deferred | S |
+| [item5](item5.md) | Write-block detection trusts output text: bogus grant prompts and command re-runs | recorded — fix pending | S–M |
 
 ## Considered and dismissed (do not re-derive)
 
