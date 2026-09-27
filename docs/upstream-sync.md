@@ -13,7 +13,7 @@ Future upstream updates are a plain merge:
 
 ```sh
 git fetch upstream
-git log 31fa506..upstream/main --oneline   # review what's coming
+git log c3b2f73..upstream/main --oneline   # review what's coming
 git merge upstream/main
 ```
 
@@ -33,13 +33,13 @@ file pointers are the sync-time checklist.
 
 | # | Divergence | Where |
 |---|---|---|
-| D1 | Fork identity — package `pi-claude-sandbox` v0.7.2, javapacr repo URLs, README fork section | `package.json`, `README.md` |
+| D1 | Fork identity — package `pi-claude-sandbox` v0.7.3, javapacr repo URLs, README fork section | `package.json`, `README.md` |
 | D2 | Runtime pin — `@carderne/sandbox-runtime` resolved to `github:javapacr/sandbox-runtime#935c2ba` (fork = upstream v0.0.72 sync + allowedIPs closure port, committed dist) | `package.json`, `pnpm-lock.yaml` |
 | D3 | Tildified config-path display — `~/…` paths in hints and the `/sandbox` render | `src/ui.ts` (`tildify`) |
 | D5 | Exec-level hardening — `isSocksProxyReady` SOCKS5 probe, `ssh()` + `GIT_SSH_COMMAND` proxy preamble, `fixShellQuoteBangEscape`, keep-alive (30s tick / 250ms grace / 60min cap), `withTimeout`, `retryBashCommand` (upstream `waitForChildProcess` kept verbatim), `ORIGINAL_COMMAND_SYMBOL` stamp | `src/sandbox-runtime.ts` |
 | D6 | Write-grant flow — denyWrite-wins pre-check + notify + tildified dual-path hints (bash path, additive), single auto-retry after grant (`autoRetriedToolCallIds`) | `src/extension.ts`, `src/hook-mode.ts` |
 | D7 | Session wiring + richer block-path extraction — keep-alive/`withTimeout` on session hooks (10s timeouts on init/reset); `extractBlockedWritePath` (child tools, "line N", `~` paths) consolidated and re-exported from `src/policy.ts` | `src/extension.ts`, `src/policy.ts`, `src/sandbox-runtime.ts` |
-| D10 | Hook mode — `compat.registerBashTool: false` in sandbox.json → skip bash registration and mutate `event.input.command` in `tool_call` (legacy wrap architecture). Exists because pi-patty-bg-tasks ALSO registers bash (name collision = pi exits at load). Upstream default (undefined) stays byte-equivalent to upstream behavior | `src/config.ts`, `src/hook-mode.ts` |
+| D10 | Hook mode — `compat.registerBashTool: false` in sandbox.json → skip bash registration and mutate `event.input.command` in `tool_call` (legacy wrap architecture). Exists because pi-patty-bg-tasks ALSO registers bash (name collision = pi exits at load). Upstream default (undefined) stays byte-equivalent to upstream behavior. In default mode the `else`-branch `registerTool`'s sandboxed `createBashToolDefinition` carries upstream's `commandPrefix: shellCommandPrefix` (#88); a sync that conflicts on that hunk keeps the `if (hookMode)/else` branch and re-applies the line | `src/config.ts`, `src/hook-mode.ts`, `src/extension.ts` (`if (hookMode)/else` around `registerTool`) |
 
 Two follow-up commits are part of the same layer and belong to the sync
 checklist:
@@ -53,8 +53,9 @@ checklist:
 ## Freeze model
 
 The divergence layer is authored against an upstream tip **frozen at
-`31fa506`** (v0.6.8, 2026-09-08 — "isolate sandbox managers between agent
-sessions", #84). Frozen means *chosen deliberate base*, not a permanent pin —
+`c3b2f73`** (upstream `main` after #88 "sandboxed bash respects
+shellCommandPrefix", merged 2026-09-27; untagged, latest upstream tag v0.6.8 =
+`31fa506`). Frozen means *chosen deliberate base*, not a permanent pin —
 that's what makes later merges cheap.
 
 Re-freezing (advancing the base):
@@ -64,6 +65,14 @@ Re-freezing (advancing the base):
 3. Re-run the full gate checklist below
 4. All green → the merge commit becomes the new freeze point; update the
    freeze SHA mentioned above to the new `upstream/main` tip it merged.
+5. Write the sync record: `docs/sync-log/<date>-<upstream-sha>.md` — what
+   upstream brought, how the merge touched the divergence layer, what the
+   fork added, pending items (durable ones go to `docs/backlog/`).
+
+Sync log (newest first):
+
+- [2026-09-27 → `c3b2f73`](sync-log/2026-09-27-c3b2f73.md) — #88
+  shellCommandPrefix; v0.7.3
 
 ## Gate checklist (every sync)
 

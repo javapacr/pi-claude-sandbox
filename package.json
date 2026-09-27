@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-sandbox",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "Claude-style OS-level sandboxing for pi with interactive permission prompts. Coexists with pi-tool-display and other bash-overriding extensions. Forked from carderne/pi-sandbox, then forked by javapacr for profile-aware config handling and documentation fixes.",
   "keywords": [
     "pi-package",
