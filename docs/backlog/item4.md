@@ -10,7 +10,7 @@ Upstream #88 made the sandboxed bash tool honour pi's `shellCommandPrefix` setti
 - Our `tool_call` mutation (`mutateStep` in `src/hook-mode.ts`) replaces `event.input.command` with the `wrapWithSandbox(...)` result.
 - What happens to the prefix depends on which bash executes:
   - **pi's built-in bash** prepends `shellCommandPrefix` as `${prefix}\n${command}` to the already-wrapped command. The prefix runs **outside** the sandbox wrapper, and any side effects it has are unsandboxed.
-  - **pi-patty-bg-tasks** (1.1.6) builds its bash with `createBashToolDefinition(process.cwd())` and passes no `commandPrefix`, so the prefix runs **nowhere**: the setting is silently ignored.
+  - **pi-patty-bg-tasks** (1.1.6) builds its bash with `createBashToolDefinition(process.cwd())` and passes no `commandPrefix`; its `execute` override also spawns `bash -c` directly and never calls pi's bash `execute`. So the prefix runs **nowhere**: the setting is silently ignored.
 - In the built-in case, non-env shell state the prefix sets up never reaches the wrapped command: aliases, functions, `shopt` options. Exported env vars reach it only through process inheritance.
 
 ## Plan
@@ -28,7 +28,7 @@ Scope today:
 
 ## Acceptance criteria
 
-- [ ] Decide fix or no-fix in the follow-up session. The decision weighs the prefix running unsandboxed today against the double-run hazard of the candidate fix, given the work profile's actual mode and prefix.
+- [ ] Decide fix or no-fix in the follow-up session. The decision weighs the prefix running unsandboxed today against the double-run hazard of the candidate fix (built-in bash only; with pi-patty-bg-tasks the prefix is ignored today and the fix would run it once), given the work profile's actual mode and prefix.
 
 ## Evidence / log
 
